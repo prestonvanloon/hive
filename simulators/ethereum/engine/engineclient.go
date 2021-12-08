@@ -12,8 +12,12 @@ import (
 	"github.com/ethereum/hive/hivesim"
 )
 
-// CatalystClient wrapper for Ethereum Engine RPC.
-type CatalystClient struct {
+// Execution API v1.0.0-alpha.5 changes this to 8550
+// https://github.com/ethereum/execution-apis/releases/tag/v1.0.0-alpha.5
+var EnginePort = 8545
+
+// EngineClient wrapper for Ethereum Engine RPC.
+type EngineClient struct {
 	*hivesim.T
 	c   *rpc.Client
 	Eth *ethclient.Client
@@ -26,7 +30,7 @@ type CatalystClient struct {
 }
 
 // NewClient creates a engine client that uses the given RPC client.
-func NewCatalystClient(t *hivesim.T, hc *hivesim.Client) *CatalystClient {
+func NewEngineClient(t *hivesim.T, hc *hivesim.Client) *EngineClient {
 	client := &http.Client{
 		Transport: &loggingRoundTrip{
 			t:     t,
@@ -34,17 +38,17 @@ func NewCatalystClient(t *hivesim.T, hc *hivesim.Client) *CatalystClient {
 		},
 	}
 
-	rpcClient, _ := rpc.DialHTTPWithClient(fmt.Sprintf("http://%v:8545/", hc.IP), client)
+	rpcClient, _ := rpc.DialHTTPWithClient(fmt.Sprintf("http://%v:%v/", hc.IP, EnginePort), client)
 
 	eth := ethclient.NewClient(rpcClient)
-	return &CatalystClient{t, rpcClient, eth, nil, nil}
+	return &EngineClient{t, rpcClient, eth, nil, nil}
 }
 
-func (ec *CatalystClient) Close() {
+func (ec *EngineClient) Close() {
 	ec.c.Close()
 }
 
-func (ec *CatalystClient) Ctx() context.Context {
+func (ec *EngineClient) Ctx() context.Context {
 	if ec.lastCtx != nil {
 		ec.lastCancel()
 	}
@@ -53,19 +57,19 @@ func (ec *CatalystClient) Ctx() context.Context {
 }
 
 // Engine API Call Methods
-func (ec *CatalystClient) EngineForkchoiceUpdatedV1(ctx context.Context, fcState *catalyst.ForkchoiceStateV1, pAttributes *catalyst.PayloadAttributesV1) (catalyst.ForkChoiceResponse, error) {
+func (ec *EngineClient) EngineForkchoiceUpdatedV1(ctx context.Context, fcState *catalyst.ForkchoiceStateV1, pAttributes *catalyst.PayloadAttributesV1) (catalyst.ForkChoiceResponse, error) {
 	var result catalyst.ForkChoiceResponse
 	err := ec.c.CallContext(ctx, &result, "engine_forkchoiceUpdatedV1", fcState, pAttributes)
 	return result, err
 }
 
-func (ec *CatalystClient) EngineGetPayloadV1(ctx context.Context, payloadId *hexutil.Bytes) (catalyst.ExecutableDataV1, error) {
+func (ec *EngineClient) EngineGetPayloadV1(ctx context.Context, payloadId *hexutil.Bytes) (catalyst.ExecutableDataV1, error) {
 	var result catalyst.ExecutableDataV1
 	err := ec.c.CallContext(ctx, &result, "engine_getPayloadV1", payloadId)
 	return result, err
 }
 
-func (ec *CatalystClient) EngineExecutePayloadV1(ctx context.Context, payload *catalyst.ExecutableDataV1) (catalyst.ExecutePayloadResponse, error) {
+func (ec *EngineClient) EngineExecutePayloadV1(ctx context.Context, payload *catalyst.ExecutableDataV1) (catalyst.ExecutePayloadResponse, error) {
 	var result catalyst.ExecutePayloadResponse
 	err := ec.c.CallContext(ctx, &result, "engine_executePayloadV1", payload)
 	return result, err

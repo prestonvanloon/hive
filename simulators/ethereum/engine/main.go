@@ -22,9 +22,11 @@ var (
 	// PoS related
 	terminalTotalDifficulty = big.NewInt(131072 + 25)
 	blockProductionPoS      = time.Second * 1
-	clMocker                = NewCLMocker(terminalTotalDifficulty)
 	tTDCheck                = time.Second * 1
 )
+
+var clMocker *CLMocker
+var vault *Vault
 
 var clientEnv = hivesim.Params{
 	"HIVE_NETWORK_ID":          networkID.String(),
@@ -58,83 +60,67 @@ type testSpec struct {
 }
 
 var tests = []testSpec{
-	// HTTP RPC tests.
-	{Name: "http/BalanceAndNonceAt", Run: balanceAndNonceAtTest},
-	{Name: "http/CanonicalChain", Run: canonicalChainTest},
-	{Name: "http/CodeAt", Run: CodeAtTest},
-	{Name: "http/ContractDeployment", Run: deployContractTest},
-	{Name: "http/ContractDeploymentOutOfGas", Run: deployContractOutOfGasTest},
-	{Name: "http/EstimateGas", Run: estimateGasTest},
+
+	// TerminalTotalDifficulty Genesis
 	{Name: "http/GenesisBlockByHash", Run: genesisBlockByHashTest},
 	{Name: "http/GenesisBlockByNumber", Run: genesisBlockByNumberTest},
 	{Name: "http/GenesisHeaderByHash", Run: genesisHeaderByHashTest},
 	{Name: "http/GenesisHeaderByNumber", Run: genesisHeaderByNumberTest},
-	{Name: "http/Receipt", Run: receiptTest},
-	{Name: "http/SyncProgress", Run: syncProgressTest},
-	{Name: "http/TransactionCount", Run: transactionCountTest},
-	{Name: "http/TransactionInBlock", Run: transactionInBlockTest},
-	{Name: "http/TransactionReceipt", Run: TransactionReceiptTest},
 
-	// HTTP ABI tests.
-	{Name: "http/ABICall", Run: callContractTest},
-	{Name: "http/ABITransact", Run: transactContractTest},
-
+	// Engine API
+	{Name: "http/EngineAPINegative", Run: engineAPINegative},
+	{Name: "http/FeeRecipient", Run: feeRecipient},
 	// Random opcode tests
 	{Name: "http/RandomOpcodeTx", Run: randomOpcodeTx},
-
-	/*
-		// WebSocket RPC tests.
-		{Name: "ws/BalanceAndNonceAt", Run: balanceAndNonceAtTest},
-		{Name: "ws/CanonicalChain", Run: canonicalChainTest},
-		{Name: "ws/CodeAt", Run: CodeAtTest},
-		{Name: "ws/ContractDeployment", Run: deployContractTest},
-		{Name: "ws/ContractDeploymentOutOfGas", Run: deployContractOutOfGasTest},
-		{Name: "ws/EstimateGas", Run: estimateGasTest},
-		{Name: "ws/GenesisBlockByHash", Run: genesisBlockByHashTest},
-		{Name: "ws/GenesisBlockByNumber", Run: genesisBlockByNumberTest},
-		{Name: "ws/GenesisHeaderByHash", Run: genesisHeaderByHashTest},
-		{Name: "ws/GenesisHeaderByNumber", Run: genesisHeaderByNumberTest},
-		{Name: "ws/Receipt", Run: receiptTest},
-		{Name: "ws/SyncProgress", Run: syncProgressTest},
-		{Name: "ws/TransactionCount", Run: transactionCountTest},
-		{Name: "ws/TransactionInBlock", Run: transactionInBlockTest},
-		{Name: "ws/TransactionReceipt", Run: TransactionReceiptTest},
-
-		// WebSocket subscription tests.
-		{Name: "ws/NewHeadSubscription", Run: newHeadSubscriptionTest},
-		{Name: "ws/LogSubscription", Run: logSubscriptionTest},
-		{Name: "ws/TransactionInBlockSubscription", Run: transactionInBlockSubscriptionTest},
-
-		// WebSocket ABI tests.
-		{Name: "ws/ABICall", Run: callContractTest},
-		{Name: "ws/ABITransact", Run: transactContractTest}, */
 }
 
 func main() {
 	suite := hivesim.Suite{
 		Name: "engine",
 		Description: `
-The RPC test suite runs a set of RPC related tests against a running node. It tests
-several real-world scenarios such as sending value transactions, deploying a contract or
-interacting with one.`[1:],
+Test Engine API.`[1:],
 	}
 	suite.Add(&hivesim.ClientTestSpec{
 		Name:        "client launch",
 		Description: `This test launches the client and collects its logs.`,
 		Parameters:  clientEnv,
 		Files:       files,
-		Run:         runAllTests,
+		Run:         runSourceTest,
 	})
 	hivesim.MustRunSuite(hivesim.New(), suite)
+}
+
+func runSourceTest(t *hivesim.T, c *hivesim.Client) {
+	clMocker = NewCLMocker()
+	vault = newVault()
+
+	ec := NewEngineClient(t, c)
+	clMocker.AddEngineClient(ec)
+
+	enode, err := c.EnodeURL()
+	if err != nil {
+		t.Fatal("can't get node peer-to-peer endpoint:", enode)
+	}
+	newParams := clientEnv.Set("HIVE_BOOTNODE", enode)
+
+	t.RunAllClients(hivesim.ClientTestSpec{
+		Name:        fmt.Sprintf("%s", c.Type),
+		Description: "test",
+		Parameters:  newParams,
+		Files:       files,
+		Run:         runAllTests,
+	})
+	clMocker.stopPoSBlockProduction()
 }
 
 // runAllTests runs the tests against a client instance.
 // Most tests simply wait for tx inclusion in a block so we can run many tests concurrently.
 func runAllTests(t *hivesim.T, c *hivesim.Client) {
-	vault := newVault()
-	ec := NewCatalystClient(t, c)
-	clMocker.AddCatalystClient(ec)
-	s := newSemaphore(16)
+	ec := NewEngineClient(t, c)
+	clMocker.AddEngineClient(ec)
+	parallelism := 40
+
+	s := newSemaphore(parallelism)
 	for _, test := range tests {
 		test := test
 		s.get()
@@ -146,9 +132,9 @@ func runAllTests(t *hivesim.T, c *hivesim.Client) {
 				Run: func(t *hivesim.T) {
 					switch test.Name[:strings.IndexByte(test.Name, '/')] {
 					case "http":
-						runHTTP(t, c, vault, clMocker, test.Run)
+						runHTTP(t, c, ec, vault, clMocker, test.Run)
 					case "ws":
-						runWS(t, c, vault, clMocker, test.Run)
+						runWS(t, c, ec, vault, clMocker, test.Run)
 					default:
 						panic("bad test prefix in name " + test.Name)
 					}
@@ -157,6 +143,7 @@ func runAllTests(t *hivesim.T, c *hivesim.Client) {
 		}()
 	}
 	s.drain()
+	clMocker.RemoveCatalystClient(ec)
 }
 
 type semaphore chan struct{}

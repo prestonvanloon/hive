@@ -14,4 +14,4 @@ require (
 	github.com/tyler-smith/go-bip39 v1.0.2 // indirect
 )
 
-replace github.com/ethereum/go-ethereum => github.com/MariusVanDerWijden/go-ethereum v1.8.22-0.20211124210259-c34a7c5ca72c
+replace github.com/ethereum/go-ethereum => github.com/MariusVanDerWijden/go-ethereum v1.8.22-0.20211208130706-2f5020586931
