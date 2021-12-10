@@ -47,6 +47,7 @@ var clientEnv = hivesim.Params{
 	"HIVE_MINER":             "658bdf435d810c91414ec09147daa6db62406379",
 	// Merge related
 	"HIVE_TERMINAL_TOTAL_DIFFICULTY": terminalTotalDifficulty.String(),
+	"HIVE_MERGE_BLOCK_ID":            "100",
 }
 
 var files = map[string]string{
