@@ -16,15 +16,22 @@ import (
 type CLMocker struct {
 	EngineClients               []*EngineClient
 	RandomHistory               map[uint64]common.Hash
-	LastPoSChainHeader          *types.Header
+	LatestFinalizedHeader       *types.Header
 	PoSBlockProductionActivated bool
 	BlockProductionMustStop     bool
 	FirstPoSBlockNumber         *big.Int
-	CurrentBlockNumber          *big.Int
-	TTDReached                  bool
-	NextFeeRecipient            common.Address
-	NextFeeRecipientMutex       sync.Mutex
-	BlockProducedMutex          sync.Mutex
+
+	LatestFinalizedNumber *big.Int
+	LatestForkchoice      catalyst.ForkchoiceStateV1
+
+	TTDReached            bool
+	NextFeeRecipient      common.Address
+	NextFeeRecipientMutex sync.Mutex
+
+	// Mutexes
+	BlockHeadMutex  sync.Mutex
+	BlockSafeMutex  sync.Mutex
+	BlockFinalMutex sync.Mutex
 }
 
 func NewCLMocker() *CLMocker {
@@ -34,16 +41,23 @@ func NewCLMocker() *CLMocker {
 	newCLMocker := &CLMocker{
 		EngineClients:               make([]*EngineClient, 0),
 		RandomHistory:               map[uint64]common.Hash{},
-		LastPoSChainHeader:          nil,
+		LatestFinalizedHeader:       nil,
 		PoSBlockProductionActivated: false,
 		BlockProductionMustStop:     false,
 		FirstPoSBlockNumber:         nil,
-		CurrentBlockNumber:          nil,
+		LatestFinalizedNumber:       nil,
 		TTDReached:                  false,
 		NextFeeRecipient:            common.Address{},
+		LatestForkchoice: catalyst.ForkchoiceStateV1{
+			HeadBlockHash:      common.Hash{},
+			SafeBlockHash:      common.Hash{},
+			FinalizedBlockHash: common.Hash{},
+		},
 	}
 	time.AfterFunc(tTDCheck, newCLMocker.checkTTD)
-	newCLMocker.BlockProducedMutex.Lock()
+	newCLMocker.BlockHeadMutex.Lock()
+	newCLMocker.BlockSafeMutex.Lock()
+	newCLMocker.BlockFinalMutex.Lock()
 	return newCLMocker
 }
 
@@ -53,7 +67,7 @@ func (cl *CLMocker) AddEngineClient(newEngineClient *EngineClient) {
 }
 
 // Remove a Client to stop sending latest payloads
-func (cl *CLMocker) RemoveCatalystClient(removeEngineClient *EngineClient) {
+func (cl *CLMocker) RemoveEngineClient(removeEngineClient *EngineClient) {
 	i := -1
 	for j := 0; j < len(cl.EngineClients); j++ {
 		if cl.EngineClients[j] == removeEngineClient {
@@ -86,23 +100,21 @@ func (cl *CLMocker) checkTTD() {
 
 	currentTD := big.NewInt(0)
 	for i := 0; i <= int(lastBlockNumber); i++ {
-		cl.LastPoSChainHeader, err = ec.Eth.HeaderByNumber(ec.Ctx(), big.NewInt(int64(i)))
+		cl.LatestFinalizedHeader, err = ec.Eth.HeaderByNumber(ec.Ctx(), big.NewInt(int64(i)))
 		if err != nil {
 			ec.Fatalf("Could not get block header: %v", err)
 		}
-		currentTD.Add(currentTD, cl.LastPoSChainHeader.Difficulty)
+		currentTD.Add(currentTD, cl.LatestFinalizedHeader.Difficulty)
 	}
 
 	if currentTD.Cmp(terminalTotalDifficulty) >= 0 {
 		cl.TTDReached = true
-		fmt.Printf("TTD has been reached at block %v\n", cl.LastPoSChainHeader.Number)
+		fmt.Printf("TTD has been reached at block %v\n", cl.LatestFinalizedHeader.Number)
 		// Broadcast initial ForkchoiceUpdated
-		forkchoiceState := catalyst.ForkchoiceStateV1{
-			HeadBlockHash:      cl.LastPoSChainHeader.Hash(),
-			SafeBlockHash:      cl.LastPoSChainHeader.Hash(),
-			FinalizedBlockHash: cl.LastPoSChainHeader.Hash(),
-		}
-		for _, resp := range cl.broadcastForkchoiceUpdated(&forkchoiceState, nil) {
+		cl.LatestForkchoice.HeadBlockHash = cl.LatestFinalizedHeader.Hash()
+		cl.LatestForkchoice.SafeBlockHash = cl.LatestFinalizedHeader.Hash()
+		cl.LatestForkchoice.FinalizedBlockHash = cl.LatestFinalizedHeader.Hash()
+		for _, resp := range cl.broadcastForkchoiceUpdated(&cl.LatestForkchoice, nil) {
 			if resp.Status != "SUCCESS" {
 				fmt.Printf("forkchoiceUpdated Response: %v\n", resp)
 			}
@@ -134,19 +146,21 @@ func (cl *CLMocker) setNextFeeRecipient(feeRecipient common.Address) *big.Int {
 	defer cl.NextFeeRecipientMutex.Unlock()
 	cl.NextFeeRecipient = feeRecipient
 	// Wait until the next block is produced using our feeRecipient
-	cl.BlockProducedMutex.Lock()
-	defer cl.BlockProducedMutex.Unlock()
+	cl.BlockFinalMutex.Lock()
+	defer cl.BlockFinalMutex.Unlock()
 
 	// Reset NextFeeRecipient
 	cl.NextFeeRecipient = common.Address{}
 
-	return cl.CurrentBlockNumber
+	return cl.LatestFinalizedNumber
 }
 
 // Mine a PoS block by using the catalyst Engine API
 func (cl *CLMocker) minePOSBlock() {
 	if cl.BlockProductionMustStop {
-		cl.BlockProducedMutex.Unlock()
+		cl.BlockHeadMutex.Unlock()
+		cl.BlockSafeMutex.Unlock()
+		cl.BlockFinalMutex.Unlock()
 		return
 	}
 	var ec *EngineClient
@@ -159,30 +173,28 @@ func (cl *CLMocker) minePOSBlock() {
 
 		lastBlockNumber, err = ec.Eth.BlockNumber(ec.Ctx())
 		if err != nil {
-			cl.BlockProducedMutex.Unlock()
+			cl.BlockHeadMutex.Unlock()
+			cl.BlockSafeMutex.Unlock()
+			cl.BlockFinalMutex.Unlock()
 			ec.Fatalf("Could not get block number: %v", err)
 		}
 
 		latestHeader, err := ec.Eth.HeaderByNumber(ec.Ctx(), big.NewInt(int64(lastBlockNumber)))
 		if err != nil {
-			cl.BlockProducedMutex.Unlock()
+			cl.BlockHeadMutex.Unlock()
+			cl.BlockSafeMutex.Unlock()
+			cl.BlockFinalMutex.Unlock()
 			ec.Fatalf("Could not get block header: %v", err)
 		}
 
 		lastBlockHash := latestHeader.Hash()
 
-		if cl.LastPoSChainHeader.Hash() != lastBlockHash {
+		if cl.LatestFinalizedHeader.Hash() != lastBlockHash {
 			continue
 		} else {
 			break
 		}
 
-	}
-
-	forkchoiceState := catalyst.ForkchoiceStateV1{
-		HeadBlockHash:      cl.LastPoSChainHeader.Hash(),
-		SafeBlockHash:      cl.LastPoSChainHeader.Hash(),
-		FinalizedBlockHash: cl.LastPoSChainHeader.Hash(),
 	}
 
 	// Generate a random value for the Random field
@@ -192,16 +204,18 @@ func (cl *CLMocker) minePOSBlock() {
 	}
 
 	payloadAttributes := catalyst.PayloadAttributesV1{
-		Timestamp:             cl.LastPoSChainHeader.Time + 1,
+		Timestamp:             cl.LatestFinalizedHeader.Time + 1,
 		Random:                nextRandom,
 		SuggestedFeeRecipient: cl.NextFeeRecipient,
 	}
 
 	// TODO: Maybe we can broadcast the forkchoiceUpdated to all clients in order to test that nothing breaks if we send
 	// 		 another forkchoiceUpdated without getting the payload
-	resp, err := ec.EngineForkchoiceUpdatedV1(ec.Ctx(), &forkchoiceState, &payloadAttributes)
+	resp, err := ec.EngineForkchoiceUpdatedV1(ec.Ctx(), &cl.LatestForkchoice, &payloadAttributes)
 	if err != nil {
-		cl.BlockProducedMutex.Unlock()
+		cl.BlockHeadMutex.Unlock()
+		cl.BlockSafeMutex.Unlock()
+		cl.BlockFinalMutex.Unlock()
 		ec.Fatalf("Could not send forkchoiceUpdatedV1: %v", err)
 	}
 	if resp.Status != "SUCCESS" {
@@ -210,54 +224,81 @@ func (cl *CLMocker) minePOSBlock() {
 
 	payload, err := ec.EngineGetPayloadV1(ec.Ctx(), resp.PayloadID)
 	if err != nil {
-		cl.BlockProducedMutex.Unlock()
+		cl.BlockHeadMutex.Unlock()
+		cl.BlockSafeMutex.Unlock()
+		cl.BlockFinalMutex.Unlock()
 		ec.Fatalf("Could not getPayload (%v): %v", resp.PayloadID, err)
 	}
 
 	fmt.Printf("DEBUG: payload: %v\n", payload)
 
-	// Broadcast the executed payload to all clients
+	// Broadcast the execute payload to all clients
 	for _, resp := range cl.broadcastExecutePayload(&payload) {
 		if resp.Status != "VALID" {
 			fmt.Printf("resp: %v\n", resp)
 		}
 	}
 
-	// Broadcast forkchoice updated to all clients
-	forkchoiceState = catalyst.ForkchoiceStateV1{
-		HeadBlockHash:      payload.BlockHash,
-		SafeBlockHash:      payload.BlockHash,
-		FinalizedBlockHash: payload.BlockHash,
+	// Broadcast forkchoice updated with new HeadBlock to all clients
+	cl.LatestForkchoice.HeadBlockHash = payload.BlockHash
+	for _, resp := range cl.broadcastForkchoiceUpdated(&cl.LatestForkchoice, nil) {
+		if resp.Status != "SUCCESS" {
+			fmt.Printf("resp: %v\n", resp)
+		}
 	}
-	for _, resp := range cl.broadcastForkchoiceUpdated(&forkchoiceState, nil) {
+	// Trigger actions for new HeadBlock forkchoice broadcast
+	cl.BlockHeadMutex.Unlock()
+	cl.BlockHeadMutex.Lock()
+
+	// Broadcast forkchoice updated with new SafeBlock to all clients
+	cl.LatestForkchoice.SafeBlockHash = payload.BlockHash
+	for _, resp := range cl.broadcastForkchoiceUpdated(&cl.LatestForkchoice, nil) {
+		if resp.Status != "SUCCESS" {
+			fmt.Printf("resp: %v\n", resp)
+		}
+	}
+	// Trigger actions for new SafeBlock forkchoice broadcast
+	cl.BlockSafeMutex.Unlock()
+	cl.BlockSafeMutex.Lock()
+
+	// Broadcast forkchoice updated with new FinalizedBlock to all clients
+	cl.LatestForkchoice.FinalizedBlockHash = payload.BlockHash
+	for _, resp := range cl.broadcastForkchoiceUpdated(&cl.LatestForkchoice, nil) {
 		if resp.Status != "SUCCESS" {
 			fmt.Printf("resp: %v\n", resp)
 		}
 	}
 
 	// Save random value
-	cl.RandomHistory[cl.LastPoSChainHeader.Number.Uint64()+1] = nextRandom
+	cl.RandomHistory[cl.LatestFinalizedHeader.Number.Uint64()+1] = nextRandom
 
 	// Save the number of the first PoS block
 	if cl.FirstPoSBlockNumber == nil {
-		cl.FirstPoSBlockNumber = big.NewInt(int64(cl.LastPoSChainHeader.Number.Uint64() + 1))
+		cl.FirstPoSBlockNumber = big.NewInt(int64(cl.LatestFinalizedHeader.Number.Uint64() + 1))
 	}
 
 	// Save the header of the latest block in the PoS chain
-	cl.CurrentBlockNumber = big.NewInt(int64(lastBlockNumber + 1))
-	cl.LastPoSChainHeader, err = ec.Eth.HeaderByNumber(ec.Ctx(), cl.CurrentBlockNumber)
+	cl.LatestFinalizedNumber = big.NewInt(int64(lastBlockNumber + 1))
+	cl.LatestFinalizedHeader, err = ec.Eth.HeaderByNumber(ec.Ctx(), cl.LatestFinalizedNumber)
 	if err != nil {
-		cl.BlockProducedMutex.Unlock()
+		cl.BlockHeadMutex.Unlock()
+		cl.BlockSafeMutex.Unlock()
+		cl.BlockFinalMutex.Unlock()
 		ec.Fatalf("Could not get block header: %v", err)
 	}
 
+	// Switch protocol HTTP<>WS for all clients
+	for _, ec := range cl.EngineClients {
+		ec.SwitchProtocol()
+	}
+
 	// Trigger that we have finished producing a block
-	cl.BlockProducedMutex.Unlock()
+	cl.BlockFinalMutex.Unlock()
 
 	// Exit if we need to
 	if !cl.BlockProductionMustStop {
 		// Lock BlockProducedMutex until we produce a new block
-		cl.BlockProducedMutex.Lock()
+		cl.BlockFinalMutex.Lock()
 		time.AfterFunc(blockProductionPoS, cl.minePOSBlock)
 	}
 }

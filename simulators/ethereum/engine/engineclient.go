@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/eth/catalyst"
@@ -14,13 +15,16 @@ import (
 
 // Execution API v1.0.0-alpha.5 changes this to 8550
 // https://github.com/ethereum/execution-apis/releases/tag/v1.0.0-alpha.5
-var EnginePort = 8545
+var EnginePortHTTP = 8545
+var EnginePortWS = 8546
 
-// EngineClient wrapper for Ethereum Engine RPC.
+// EngineClient wrapper for Ethereum Engine RPC for testing purposes.
 type EngineClient struct {
 	*hivesim.T
-	c   *rpc.Client
-	Eth *ethclient.Client
+	http_c *rpc.Client
+	ws_c   *rpc.Client
+	c      *rpc.Client
+	Eth    *ethclient.Client
 
 	// This holds most recent context created by the Ctx method.
 	// Every time Ctx is called, it creates a new context with the default
@@ -37,15 +41,40 @@ func NewEngineClient(t *hivesim.T, hc *hivesim.Client) *EngineClient {
 			inner: http.DefaultTransport,
 		},
 	}
-
-	rpcClient, _ := rpc.DialHTTPWithClient(fmt.Sprintf("http://%v:%v/", hc.IP, EnginePort), client)
-
-	eth := ethclient.NewClient(rpcClient)
-	return &EngineClient{t, rpcClient, eth, nil, nil}
+	// Prepare HTTP Client
+	rpcHttpClient, _ := rpc.DialHTTPWithClient(fmt.Sprintf("http://%v:%v/", hc.IP, EnginePortHTTP), client)
+	// Prepare WS Client
+	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+	rpcWsClient, err := rpc.DialWebsocket(ctx, fmt.Sprintf("ws://%v:%v/", hc.IP, EnginePortWS), "")
+	done()
+	if err != nil {
+		t.Fatal("NewEngineClient: WebSocket connection failed:", err)
+	}
+	// Prepare ETH Client (Use HTTP)
+	eth := ethclient.NewClient(rpcHttpClient)
+	// By default we send requests via HTTP
+	return &EngineClient{t, rpcHttpClient, rpcWsClient, rpcHttpClient, eth, nil, nil}
 }
 
 func (ec *EngineClient) Close() {
-	ec.c.Close()
+	ec.http_c.Close()
+	ec.ws_c.Close()
+}
+
+func (ec *EngineClient) SetHTTP() {
+	ec.c = ec.http_c
+}
+
+func (ec *EngineClient) SetWS() {
+	ec.c = ec.ws_c
+}
+
+func (ec *EngineClient) SwitchProtocol() {
+	if ec.c == ec.http_c {
+		ec.c = ec.ws_c
+	} else {
+		ec.c = ec.http_c
+	}
 }
 
 func (ec *EngineClient) Ctx() context.Context {
@@ -59,18 +88,18 @@ func (ec *EngineClient) Ctx() context.Context {
 // Engine API Call Methods
 func (ec *EngineClient) EngineForkchoiceUpdatedV1(ctx context.Context, fcState *catalyst.ForkchoiceStateV1, pAttributes *catalyst.PayloadAttributesV1) (catalyst.ForkChoiceResponse, error) {
 	var result catalyst.ForkChoiceResponse
-	err := ec.c.CallContext(ctx, &result, "engine_forkchoiceUpdatedV1", fcState, pAttributes)
+	err := ec.http_c.CallContext(ctx, &result, "engine_forkchoiceUpdatedV1", fcState, pAttributes)
 	return result, err
 }
 
 func (ec *EngineClient) EngineGetPayloadV1(ctx context.Context, payloadId *hexutil.Bytes) (catalyst.ExecutableDataV1, error) {
 	var result catalyst.ExecutableDataV1
-	err := ec.c.CallContext(ctx, &result, "engine_getPayloadV1", payloadId)
+	err := ec.http_c.CallContext(ctx, &result, "engine_getPayloadV1", payloadId)
 	return result, err
 }
 
 func (ec *EngineClient) EngineExecutePayloadV1(ctx context.Context, payload *catalyst.ExecutableDataV1) (catalyst.ExecutePayloadResponse, error) {
 	var result catalyst.ExecutePayloadResponse
-	err := ec.c.CallContext(ctx, &result, "engine_executePayloadV1", payload)
+	err := ec.http_c.CallContext(ctx, &result, "engine_executePayloadV1", payload)
 	return result, err
 }

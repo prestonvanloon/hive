@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/params"
@@ -63,16 +62,19 @@ type testSpec struct {
 var tests = []testSpec{
 
 	// TerminalTotalDifficulty Genesis
-	{Name: "http/GenesisBlockByHash", Run: genesisBlockByHashTest},
-	{Name: "http/GenesisBlockByNumber", Run: genesisBlockByNumberTest},
-	{Name: "http/GenesisHeaderByHash", Run: genesisHeaderByHashTest},
-	{Name: "http/GenesisHeaderByNumber", Run: genesisHeaderByNumberTest},
+	{Name: "GenesisBlockByHash", Run: genesisBlockByHashTest},
+	{Name: "GenesisBlockByNumber", Run: genesisBlockByNumberTest},
+	{Name: "GenesisHeaderByHash", Run: genesisHeaderByHashTest},
+	{Name: "GenesisHeaderByNumber", Run: genesisHeaderByNumberTest},
 
 	// Engine API
-	{Name: "http/EngineAPINegative", Run: engineAPINegative},
-	{Name: "http/FeeRecipient", Run: feeRecipient},
+	{Name: "EngineAPINegative", Run: engineAPINegative},
+	{Name: "BlockStatus", Run: blockStatus},
+	{Name: "BlockStatusReorg", Run: blockStatusReorg},
+	{Name: "FeeRecipient", Run: feeRecipient},
+
 	// Random opcode tests
-	{Name: "http/RandomOpcodeTx", Run: randomOpcodeTx},
+	{Name: "RandomOpcodeTx", Run: randomOpcodeTx},
 }
 
 func main() {
@@ -119,9 +121,7 @@ func runSourceTest(t *hivesim.T, c *hivesim.Client) {
 func runAllTests(t *hivesim.T, c *hivesim.Client) {
 	ec := NewEngineClient(t, c)
 	clMocker.AddEngineClient(ec)
-	parallelism := 40
-
-	s := newSemaphore(parallelism)
+	s := newSemaphore(16)
 	for _, test := range tests {
 		test := test
 		s.get()
@@ -131,22 +131,17 @@ func runAllTests(t *hivesim.T, c *hivesim.Client) {
 				Name:        fmt.Sprintf("%s (%s)", test.Name, c.Type),
 				Description: test.About,
 				Run: func(t *hivesim.T) {
-					switch test.Name[:strings.IndexByte(test.Name, '/')] {
-					case "http":
-						runHTTP(t, c, ec, vault, clMocker, test.Run)
-					case "ws":
-						runWS(t, c, ec, vault, clMocker, test.Run)
-					default:
-						panic("bad test prefix in name " + test.Name)
-					}
+					runHTTP(t, c, ec, vault, clMocker, test.Run)
 				},
 			})
 		}()
 	}
 	s.drain()
-	clMocker.RemoveCatalystClient(ec)
+	clMocker.RemoveEngineClient(ec)
+	ec.Close()
 }
 
+// From eth/rpc
 type semaphore chan struct{}
 
 func newSemaphore(n int) semaphore {

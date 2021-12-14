@@ -65,30 +65,6 @@ func runHTTP(t *hivesim.T, c *hivesim.Client, ec *EngineClient, v *Vault, cl *CL
 	}
 }
 
-// runWS runs the given test function using the WebSocket RPC client.
-func runWS(t *hivesim.T, c *hivesim.Client, ec *EngineClient, v *Vault, cl *CLMocker, fn func(*TestEnv)) {
-	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
-	rpcClient, err := rpc.DialWebsocket(ctx, fmt.Sprintf("ws://%v:8546/", c.IP), "")
-	done()
-	if err != nil {
-		t.Fatal("WebSocket connection failed:", err)
-	}
-	defer rpcClient.Close()
-
-	env := &TestEnv{
-		T:      t,
-		RPC:    rpcClient,
-		Eth:    ethclient.NewClient(rpcClient),
-		Engine: ec,
-		CLMock: cl,
-		Vault:  v,
-	}
-	fn(env)
-	if env.lastCtx != nil {
-		env.lastCancel()
-	}
-}
-
 // CallContext is a helper method that forwards a raw RPC request to
 // the underlying RPC client. This can be used to call RPC methods
 // that are not supported by the ethclient.Client.
@@ -172,6 +148,21 @@ func waitForBlock(t *TestEnv, blockNumber *big.Int) (*types.Block, error) {
 		time.Sleep(time.Second)
 	}
 	return nil, nil
+}
+
+func waitForPoSSync(t *TestEnv) {
+	for {
+		if clMocker.TTDReached {
+			bn, err := t.Eth.BlockNumber(t.Ctx())
+			if err != nil {
+				t.Fatalf("Unable to get block number: %v", err)
+			}
+			if clMocker.LatestFinalizedNumber != nil && bn >= clMocker.LatestFinalizedNumber.Uint64() {
+				break
+			}
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 // loggingRoundTrip writes requests and responses to the test log.

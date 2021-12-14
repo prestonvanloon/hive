@@ -1,15 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"math/big"
-	"math/rand"
-	"strings"
 	"time"
 
-	ethereum "github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -18,216 +13,9 @@ import (
 )
 
 var (
-	contractCode = `
-pragma solidity ^0.4.6;
-
-contract Test {
-    event E0();
-    event E1(uint);
-    event E2(uint indexed);
-    event E3(address);
-    event E4(address indexed);
-    event E5(uint, address) anonymous;
-
-    uint public ui;
-    mapping(address => uint) map;
-
-    function Test(uint ui_) {
-    	ui = ui_;
-        map[msg.sender] = ui_;
-    }
-
-    function events(uint ui_, address addr_) {
-        E0();
-        E1(ui_);
-        E2(ui_);
-        E3(addr_);
-        E4(addr_);
-        E5(ui_, addr_);
-    }
-
-    function constFunc(uint a, uint b, uint c) constant returns(uint, uint, uint) {
-	    return (a, b, c);
-    }
-
-    function getFromMap(address addr) constant returns(uint) {
-        return map[addr];
-    }
-
-    function addToMap(address addr, uint value) {
-        map[addr] = value;
-    }
-}
-	`
-	// test contract deploy code, will deploy the contract with 1234 as argument
-	deployCode = common.Hex2Bytes("6060604052346100005760405160208061048c833981016040528080519060200190919050505b8060008190555080600160003373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff168152602001908152602001600020819055505b505b610409806100836000396000f30060606040526000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063a223e05d1461006a578063abd1a0cf1461008d578063abfced1d146100d4578063e05c914a14610110578063e6768b451461014c575b610000565b346100005761007761019d565b6040518082815260200191505060405180910390f35b34610000576100be600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919050506101a3565b6040518082815260200191505060405180910390f35b346100005761010e600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919080359060200190919050506101ed565b005b346100005761014a600480803590602001909190803573ffffffffffffffffffffffffffffffffffffffff16906020019091905050610236565b005b346100005761017960048080359060200190919080359060200190919080359060200190919050506103c4565b60405180848152602001838152602001828152602001935050505060405180910390f35b60005481565b6000600160008373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020016000205490505b919050565b80600160008473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff168152602001908152602001600020819055505b5050565b7f6031a8d62d7c95988fa262657cd92107d90ed96e08d8f867d32f26edfe85502260405180905060405180910390a17f47e2689743f14e97f7dcfa5eec10ba1dff02f83b3d1d4b9c07b206cbbda66450826040518082815260200191505060405180910390a1817fa48a6b249a5084126c3da369fbc9b16827ead8cb5cdc094b717d3f1dcd995e2960405180905060405180910390a27f7890603b316f3509577afd111710f9ebeefa15e12f72347d9dffd0d65ae3bade81604051808273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16815260200191505060405180910390a18073ffffffffffffffffffffffffffffffffffffffff167f7efef9ea3f60ddc038e50cccec621f86a0195894dc0520482abf8b5c6b659e4160405180905060405180910390a28181604051808381526020018273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019250505060405180910390a05b5050565b6000600060008585859250925092505b935093509390505600a165627a7a72305820aaf842d0d0c35c45622c5263cbb54813d2974d3999c8c38551d7c613ea2bc117002900000000000000000000000000000000000000000000000000000000000004d2")
-	// test contract code as deployed
-	runtimeCode = common.Hex2Bytes("60606040526000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063a223e05d1461006a578063abd1a0cf1461008d578063abfced1d146100d4578063e05c914a14610110578063e6768b451461014c575b610000565b346100005761007761019d565b6040518082815260200191505060405180910390f35b34610000576100be600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919050506101a3565b6040518082815260200191505060405180910390f35b346100005761010e600480803573ffffffffffffffffffffffffffffffffffffffff169060200190919080359060200190919050506101ed565b005b346100005761014a600480803590602001909190803573ffffffffffffffffffffffffffffffffffffffff16906020019091905050610236565b005b346100005761017960048080359060200190919080359060200190919080359060200190919050506103c4565b60405180848152602001838152602001828152602001935050505060405180910390f35b60005481565b6000600160008373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020016000205490505b919050565b80600160008473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff168152602001908152602001600020819055505b5050565b7f6031a8d62d7c95988fa262657cd92107d90ed96e08d8f867d32f26edfe85502260405180905060405180910390a17f47e2689743f14e97f7dcfa5eec10ba1dff02f83b3d1d4b9c07b206cbbda66450826040518082815260200191505060405180910390a1817fa48a6b249a5084126c3da369fbc9b16827ead8cb5cdc094b717d3f1dcd995e2960405180905060405180910390a27f7890603b316f3509577afd111710f9ebeefa15e12f72347d9dffd0d65ae3bade81604051808273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16815260200191505060405180910390a18073ffffffffffffffffffffffffffffffffffffffff167f7efef9ea3f60ddc038e50cccec621f86a0195894dc0520482abf8b5c6b659e4160405180905060405180910390a28181604051808381526020018273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019250505060405180910390a05b5050565b6000600060008585859250925092505b935093509390505600a165627a7a72305820aaf842d0d0c35c45622c5263cbb54813d2974d3999c8c38551d7c613ea2bc1170029")
-	// contractSrc is predeploy on the following address in the genesis block.
-	predeployedContractAddr = common.HexToAddress("0000000000000000000000000000000000000314")
-	// contractSrc is pre-deployed with the following address in the genesis block.
-	predeployedContractWithAddress = common.HexToAddress("391694e7e0b0cce554cb130d723a9d27458f9298")
-	// holds the pre-deployed contract ABI
-	predeployedContractABI = `[{"constant":true,"inputs":[],"name":"ui","outputs":[{"name":"","type":"uint256"}],"payable":false,"type":"function"},{"constant":true,"inputs":[{"name":"addr","type":"address"}],"name":"getFromMap","outputs":[{"name":"","type":"uint256"}],"payable":false,"type":"function"},{"constant":false,"inputs":[{"name":"addr","type":"address"},{"name":"value","type":"uint256"}],"name":"addToMap","outputs":[],"payable":false,"type":"function"},{"constant":false,"inputs":[{"name":"ui_","type":"uint256"},{"name":"addr_","type":"address"}],"name":"events","outputs":[],"payable":false,"type":"function"},{"constant":true,"inputs":[{"name":"a","type":"uint256"},{"name":"b","type":"uint256"},{"name":"c","type":"uint256"}],"name":"constFunc","outputs":[{"name":"","type":"uint256"},{"name":"","type":"uint256"},{"name":"","type":"uint256"}],"payable":false,"type":"function"},{"inputs":[{"name":"ui_","type":"uint256"}],"payable":false,"type":"constructor"},{"anonymous":false,"inputs":[],"name":"E0","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"name":"","type":"uint256"}],"name":"E1","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"","type":"uint256"}],"name":"E2","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"name":"","type":"address"}],"name":"E3","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"","type":"address"}],"name":"E4","type":"event"},{"anonymous":true,"inputs":[{"indexed":false,"name":"","type":"uint256"},{"indexed":false,"name":"","type":"address"}],"name":"E5","type":"event"}]`
-)
-
-var (
 	big0 = new(big.Int)
 	big1 = big.NewInt(1)
 )
-
-// CodeAtTest tests the code for the pre-deployed contract.
-func CodeAtTest(t *TestEnv) {
-	code, err := t.Eth.CodeAt(t.Ctx(), predeployedContractAddr, big0)
-	if err != nil {
-		t.Fatalf("Could not fetch code for predeployed contract: %v", err)
-	}
-	if bytes.Compare(runtimeCode, code) != 0 {
-		t.Fatalf("Unexpected code, want %x, got %x", runtimeCode, code)
-	}
-}
-
-// estimateGasTest fetches the estimated gas usage for a call to the events method.
-func estimateGasTest(t *TestEnv) {
-	var (
-		address        = t.Vault.createAccount(t, big.NewInt(params.Ether))
-		contractABI, _ = abi.JSON(strings.NewReader(predeployedContractABI))
-		intArg         = big.NewInt(rand.Int63())
-	)
-
-	payload, err := contractABI.Pack("events", intArg, address)
-	if err != nil {
-		t.Fatalf("Unable to prepare tx payload: %v", err)
-	}
-	msg := ethereum.CallMsg{
-		From: address,
-		To:   &predeployedContractAddr,
-		Data: payload,
-	}
-	estimated, err := t.Eth.EstimateGas(t.Ctx(), msg)
-	if err != nil {
-		t.Fatalf("Could not estimate gas: %v", err)
-	}
-
-	// send the actual tx and test gas usage
-	txGas := estimated + 100000
-	rawTx := types.NewTransaction(0, *msg.To, msg.Value, txGas, big.NewInt(32*params.GWei), msg.Data)
-	tx, err := t.Vault.signTransaction(address, rawTx)
-	if err != nil {
-		t.Fatalf("Could not sign transaction: %v", err)
-	}
-
-	if err := t.Eth.SendTransaction(t.Ctx(), tx); err != nil {
-		t.Fatalf("Could not send tx: %v", err)
-	}
-
-	receipt, err := waitForTxConfirmations(t, tx.Hash(), 1)
-	if err != nil {
-		t.Fatalf("Could not wait for confirmations: %v", err)
-	}
-
-	// test lower bound
-	if estimated < receipt.GasUsed {
-		t.Fatalf("Estimated gas too low, want %d >= %d", estimated, receipt.GasUsed)
-	}
-	// test upper bound
-	if receipt.GasUsed+5000 < estimated {
-		t.Fatalf("Estimated gas too high, estimated: %d, used: %d", estimated, receipt.GasUsed)
-	}
-}
-
-// balanceAndNonceAtTest creates a new account and transfers funds to it.
-// It then tests if the balance and nonce of the sender and receiver
-// address are updated correct.
-func balanceAndNonceAtTest(t *TestEnv) {
-
-	var (
-		sourceAddr  = t.Vault.createAccount(t, big.NewInt(params.Ether))
-		sourceNonce = uint64(0)
-		targetAddr  = t.Vault.createAccount(t, nil)
-	)
-
-	// Get current balance
-	sourceAddressBalanceBefore, err := t.Eth.BalanceAt(t.Ctx(), sourceAddr, nil)
-	if err != nil {
-		t.Fatalf("Unable to retrieve balance: %v", err)
-	}
-
-	expected := big.NewInt(params.Ether)
-	if sourceAddressBalanceBefore.Cmp(expected) != 0 {
-		t.Errorf("Expected balance %d, got %d", expected, sourceAddressBalanceBefore)
-	}
-
-	nonceBefore, err := t.Eth.NonceAt(t.Ctx(), sourceAddr, nil)
-	if err != nil {
-		t.Fatalf("Unable to determine nonce: %v", err)
-	}
-	if nonceBefore != sourceNonce {
-		t.Fatalf("Invalid nonce, want %d, got %d", sourceNonce, nonceBefore)
-	}
-
-	// send 1234 wei to target account and verify balances and nonces are updated
-	var (
-		amount   = big.NewInt(1234)
-		gasLimit = uint64(50000)
-	)
-	rawTx := types.NewTransaction(sourceNonce, targetAddr, amount, gasLimit, gasPrice, nil)
-	valueTx, err := t.Vault.signTransaction(sourceAddr, rawTx)
-	if err != nil {
-		t.Fatalf("Unable to sign value tx: %v", err)
-	}
-	sourceNonce++
-
-	t.Logf("BalanceAt: send %d wei from 0x%x to 0x%x in 0x%x", valueTx.Value(), sourceAddr, targetAddr, valueTx.Hash())
-	if err := t.Eth.SendTransaction(t.Ctx(), valueTx); err != nil {
-		t.Fatalf("Unable to send transaction: %v", err)
-	}
-
-	var receipt *types.Receipt
-	for {
-		receipt, err = t.Eth.TransactionReceipt(t.Ctx(), valueTx.Hash())
-		if receipt != nil {
-			break
-		}
-		if err != ethereum.NotFound {
-			t.Fatalf("Could not fetch receipt for 0x%x: %v", valueTx.Hash(), err)
-		}
-		time.Sleep(time.Second)
-	}
-
-	// ensure balances have been updated
-	accountBalanceAfter, err := t.Eth.BalanceAt(t.Ctx(), sourceAddr, nil)
-	if err != nil {
-		t.Fatalf("Unable to retrieve balance: %v", err)
-	}
-	balanceTargetAccountAfter, err := t.Eth.BalanceAt(t.Ctx(), targetAddr, nil)
-	if err != nil {
-		t.Fatalf("Unable to retrieve balance: %v", err)
-	}
-
-	// expected balance is previous balance - tx amount - tx fee (gasUsed * gasPrice)
-	exp := new(big.Int).Set(sourceAddressBalanceBefore)
-	exp.Sub(exp, amount)
-	exp.Sub(exp, new(big.Int).Mul(big.NewInt(int64(receipt.GasUsed)), valueTx.GasPrice()))
-
-	if exp.Cmp(accountBalanceAfter) != 0 {
-		t.Errorf("Expected sender account to have a balance of %d, got %d", exp, accountBalanceAfter)
-	}
-	if balanceTargetAccountAfter.Cmp(amount) != 0 {
-		t.Errorf("Expected new account to have a balance of %d, got %d", valueTx.Value(), balanceTargetAccountAfter)
-	}
-
-	// ensure nonce is incremented by 1
-	nonceAfter, err := t.Eth.NonceAt(t.Ctx(), sourceAddr, nil)
-	if err != nil {
-		t.Fatalf("Unable to determine nonce: %v", err)
-	}
-	expectedNonce := nonceBefore + 1
-	if expectedNonce != nonceAfter {
-		t.Fatalf("Invalid nonce, want %d, got %d", expectedNonce, nonceAfter)
-	}
-
-}
 
 // genesisByHash fetches the known genesis header and compares
 // it against the genesis file to determine if block fields are
@@ -354,7 +142,6 @@ func canonicalChainTest(t *TestEnv) {
 }
 
 // Engine API Tests
-
 func engineAPINegative(t *TestEnv) {
 	// Test that the engine_ directives are correctly ignored when the chain has not yet reached TTD
 	gblock := loadGenesis()
@@ -395,21 +182,169 @@ func engineAPINegative(t *TestEnv) {
 			t.Fatalf("ExecutePayloadV1 accepted under PoW rule: %v, %v", execresp, err)
 		}
 	}
-	// Wait until TTD is reached
-	for {
-		if clMocker.TTDReached {
-			bn, err := t.Eth.BlockNumber(t.Ctx())
-			if err != nil {
-				t.Fatalf("Unable to get block number: %v", err)
-			}
-			if clMocker.FirstPoSBlockNumber != nil && bn >= clMocker.FirstPoSBlockNumber.Uint64() {
-				break
-			}
-		}
-		time.Sleep(time.Second)
-	}
-	// We have reached TTD and the client is synced past the TTD block
 
+	// Wait until TTD is reached by this client
+	waitForPoSSync(t)
+
+	// We have reached TTD and the client is synced past the TTD block
+	{
+		// TODO 1: Add test where safeBlockHash is NOT equal to headBlockHash nor an ancestor to it.
+		// TODO 1b: Same but for finalizedBlockHash
+
+		/* TODO 2: Enable
+		// Send a forkchoiceUpdated with unknown random Block hash
+		randomHeadBlockHash := common.Hash{}
+		for i := 0; i < common.HashLength; i++ {
+			randomHeadBlockHash[i] = byte(rand.Uint32())
+		}
+		forkchoiceStateUnknownHash := catalyst.ForkchoiceStateV1{
+			HeadBlockHash:      randomHeadBlockHash,
+			SafeBlockHash:      randomHeadBlockHash,
+			FinalizedBlockHash: randomHeadBlockHash,
+		}
+
+		resp, err := t.Engine.EngineForkchoiceUpdatedV1(t.Engine.Ctx(), &forkchoiceStateUnknownHash, nil)
+		if err != nil {
+			t.Fatalf("Could not send forkchoiceUpdatedV1: %v", err)
+		}
+		if resp.Status != "SYNCING" {
+			t.Fatalf("Unknown hash forkchoiceUpdatedV1 did not return SYNCING: %v", resp)
+		}
+		*/
+	}
+}
+
+// Test to get information on the latest HeadBlock
+func blockStatus(t *TestEnv) {
+	// Wait until this client catches up with latest PoS Block
+	waitForPoSSync(t)
+
+	// Run HeadBlock tests
+	clMocker.BlockHeadMutex.Lock()
+	currentBlockHeader, err := t.Eth.HeaderByNumber(t.Ctx(), nil)
+	if err != nil {
+		clMocker.BlockHeadMutex.Unlock()
+		t.Fatalf("BlockStatus: Unable to get latest block header: %v", err)
+	}
+	/* TODO: Geth changes immediately when HeadBlockHash is received
+	if currentBlockHeader.Hash() == clMocker.LatestForkchoice.HeadBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.SafeBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.FinalizedBlockHash {
+		clMocker.BlockHeadMutex.Unlock()
+		t.Fatalf("BlockStatus: latest block header doesn't match SafeBlock hash: %v, %v", currentBlockHeader.Hash(), clMocker.LatestForkchoice)
+	}
+	*/
+	clMocker.BlockHeadMutex.Unlock()
+
+	// Run SafeBlock tests
+	clMocker.BlockSafeMutex.Lock()
+	currentBlockHeader, err = t.Eth.HeaderByNumber(t.Ctx(), nil)
+	if err != nil {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatus: Unable to get latest block header: %v", err)
+	}
+	if currentBlockHeader.Hash() != clMocker.LatestForkchoice.HeadBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.SafeBlockHash ||
+		currentBlockHeader.Hash() == clMocker.LatestForkchoice.FinalizedBlockHash {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatus: latest block header doesn't match SafeBlock hash: %v, %v", currentBlockHeader.Hash(), clMocker.LatestForkchoice)
+	}
+	clMocker.BlockSafeMutex.Unlock()
+
+	// Run FinalizedBlock tests
+	clMocker.BlockFinalMutex.Lock()
+	currentBlockHeader, err = t.Eth.HeaderByNumber(t.Ctx(), nil)
+	if err != nil {
+		clMocker.BlockFinalMutex.Unlock()
+		t.Fatalf("BlockStatus: Unable to get latest block header: %v", err)
+	}
+	if currentBlockHeader.Hash() != clMocker.LatestForkchoice.HeadBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.SafeBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.FinalizedBlockHash {
+		clMocker.BlockFinalMutex.Unlock()
+		t.Fatalf("BlockStatus: latest block header doesn't match FinalizedBlock hash: %v, %v", currentBlockHeader.Hash(), clMocker.LatestForkchoice)
+	}
+	clMocker.BlockFinalMutex.Unlock()
+}
+
+// Test to get information on the latest HeadBlock
+func blockStatusReorg(t *TestEnv) {
+	// Wait until this client catches up with latest PoS Block
+	waitForPoSSync(t)
+
+	// Wait until we reach SafeBlock status
+	clMocker.BlockSafeMutex.Lock()
+
+	// Verify the client is serving the latest SafeBlock
+	currentBlockHeader, err := t.Eth.HeaderByNumber(t.Ctx(), nil)
+	if err != nil {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Unable to get latest block header: %v", err)
+	}
+	if currentBlockHeader.Hash() != clMocker.LatestForkchoice.HeadBlockHash ||
+		currentBlockHeader.Hash() != clMocker.LatestForkchoice.SafeBlockHash ||
+		currentBlockHeader.Hash() == clMocker.LatestForkchoice.FinalizedBlockHash {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: latest block header doesn't match SafeBlock hash: %v, %v", currentBlockHeader.Hash(), clMocker.LatestForkchoice)
+	}
+
+	// Reorg back to the previous block (FinalizedBlock)
+	reorgForkchoice := catalyst.ForkchoiceStateV1{
+		HeadBlockHash:      clMocker.LatestForkchoice.FinalizedBlockHash,
+		SafeBlockHash:      clMocker.LatestForkchoice.FinalizedBlockHash,
+		FinalizedBlockHash: clMocker.LatestForkchoice.FinalizedBlockHash,
+	}
+	resp, err := t.Engine.EngineForkchoiceUpdatedV1(t.Engine.Ctx(), &reorgForkchoice, nil)
+	if err != nil {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Could not send forkchoiceUpdatedV1: %v", err)
+	}
+	if resp.Status != "SUCCESS" {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Could not send forkchoiceUpdatedV1: %v", err)
+	}
+
+	// Check that we reorg to the previous block
+	currentBlockHeader, err = t.Eth.HeaderByNumber(t.Ctx(), nil)
+	if err != nil {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Unable to get latest block header: %v", err)
+	}
+
+	if currentBlockHeader.Hash() != clMocker.LatestForkchoice.FinalizedBlockHash {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: latest block header doesn't match reorg hash: %v, %v", currentBlockHeader.Hash(), clMocker.LatestForkchoice)
+	}
+
+	// Send the SafeBlock again to leave everything back the way it was
+	resp, err = t.Engine.EngineForkchoiceUpdatedV1(t.Engine.Ctx(), &clMocker.LatestForkchoice, nil)
+	if err != nil {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Could not send forkchoiceUpdatedV1: %v", err)
+	}
+	if resp.Status != "SUCCESS" {
+		clMocker.BlockSafeMutex.Unlock()
+		t.Fatalf("BlockStatusReorg: Could not send forkchoiceUpdatedV1: %v", err)
+	}
+
+	clMocker.BlockSafeMutex.Unlock()
+}
+
+// Test to re-org to a previous hash
+func transactionReorg(t *TestEnv) {
+	// Wait until this client catches up with latest PoS
+	waitForPoSSync(t)
+
+	// Wait for the latest HeadBlock forkchoice to be broadcast
+	clMocker.BlockHeadMutex.Lock()
+	// Run HeadBlock tests
+	clMocker.BlockHeadMutex.Unlock()
+	clMocker.BlockSafeMutex.Lock()
+	// Run SafeBlock tests
+	clMocker.BlockSafeMutex.Unlock()
+	clMocker.BlockFinalMutex.Lock()
+	// Run FinalizedBlock tests
+	clMocker.BlockFinalMutex.Unlock()
 }
 
 // Fee Recipient Tests
