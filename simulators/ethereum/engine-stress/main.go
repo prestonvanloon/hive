@@ -24,9 +24,6 @@ var (
 	// Confirmation blocks
 	PoWConfirmationBlocks = uint64(15)
 	PoSConfirmationBlocks = uint64(1)
-
-	// Stress Config
-	dummyPayloadExecutionCount = 30
 )
 
 var clMocker *CLMocker

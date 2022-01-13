@@ -9,7 +9,18 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/catalyst"
+)
+
+var (
+	// Stress Config
+	dummyPayloadExecutionCount = 80
+	dummyTxCountPerBlock       = 100
+
+	// Dummy Tx Account
+	dummyTxAccountAddr = common.HexToAddress("0x0dfaf5a021e27105c913ada59f56a067f9e3861a")
+	dummyTxKey, _      = crypto.HexToECDSA("f7b98c29c7dee58f52d940982b30d097574d7b56c3e123378b740f63e1625e98")
 )
 
 // Consensus Layer Client Mock used to sync the Execution Clients once the TTD has been reached
@@ -21,6 +32,7 @@ type CLMocker struct {
 	NextBlockProducer       *EngineClient
 	BlockProductionMustStop bool
 	NextFeeRecipient        common.Address
+	LastDummyTxAccountNonce uint64
 
 	// PoS Chain History Information
 	RandomHistory          map[uint64]common.Hash
@@ -110,6 +122,26 @@ func (cl *CLMocker) RemoveEngineClient(removeEngineClient *EngineClient) {
 	}
 }
 
+func (cl *CLMocker) nextDummyTxAccountNonce() uint64 {
+	defer func() { cl.LastDummyTxAccountNonce++ }()
+	return cl.LastDummyTxAccountNonce
+}
+
+func (cl *CLMocker) nextDummyTx() (*types.Transaction, error) {
+	var (
+		nonce    = cl.nextDummyTxAccountNonce()
+		gasLimit = uint64(75000)
+		txAmount = big.NewInt(0)
+	)
+	tx := types.NewTransaction(nonce, common.Address{}, txAmount, gasLimit, gasPrice, nil)
+	signer := types.NewEIP155Signer(chainID)
+	signedTx, err := types.SignTx(tx, signer, dummyTxKey)
+	if err != nil {
+		return nil, err
+	}
+	return signedTx, nil
+}
+
 // Helper struct to fetch the TotalDifficulty
 type TD struct {
 	TotalDifficulty *hexutil.Big `json:"totalDifficulty"`
@@ -193,6 +225,7 @@ func unlockAll(cl *CLMocker) {
 
 // Mine a PoS block by using the Engine API
 func (cl *CLMocker) stressMinePOSBlock() {
+	dummyPayloadHashes := make([]common.Hash, dummyPayloadExecutionCount)
 	for {
 		if cl.BlockProductionMustStop {
 			unlockAll(cl)
@@ -227,6 +260,23 @@ func (cl *CLMocker) stressMinePOSBlock() {
 
 		}
 
+		if dummyTxCountPerBlock > 0 {
+			startTime := time.Now().UnixMilli()
+			for i := 0; i < dummyTxCountPerBlock; i++ {
+				tx, err := cl.nextDummyTx()
+				if err != nil {
+					unlockAll(cl)
+					cl.NextBlockProducer.Fatalf("Could not produce dummy tx: %v", err)
+				}
+				err = cl.NextBlockProducer.Eth.SendTransaction(cl.NextBlockProducer.Ctx(), tx)
+				if err != nil {
+					unlockAll(cl)
+					cl.NextBlockProducer.Fatalf("Could not send dummy tx: %v", err)
+				}
+			}
+			fmt.Printf("stressMinePOSBlock: Sent %v txs in %v ms\n", dummyTxCountPerBlock, time.Now().UnixMilli()-startTime)
+		}
+
 		cl.PayloadBuildMutex.Unlock()
 		cl.PayloadBuildMutex.LockReset()
 
@@ -258,6 +308,7 @@ func (cl *CLMocker) stressMinePOSBlock() {
 		}
 
 		if dummyPayloadExecutionCount > 0 {
+			startTime := time.Now().UnixMilli()
 			for i := 0; i < dummyPayloadExecutionCount; i++ {
 				// Create and broadcast dummy payloads by changing the randomness
 				dummyRandom := common.Hash{}
@@ -269,6 +320,8 @@ func (cl *CLMocker) stressMinePOSBlock() {
 					unlockAll(cl)
 					cl.NextBlockProducer.Fatalf("Unable to create a dummy payload: %v", err)
 				}
+				// Save the hash of this payload
+				dummyPayloadHashes[i] = dummyPayload.BlockHash
 				// Broadcast the executePayload to all clients
 				for i, resp := range cl.broadcastExecutePayload(dummyPayload) {
 					if resp.Status != "VALID" {
@@ -276,6 +329,7 @@ func (cl *CLMocker) stressMinePOSBlock() {
 					}
 				}
 			}
+			fmt.Printf("stressMinePOSBlock: Sent %v dummy payloads in %v ms\n", dummyPayloadExecutionCount, time.Now().UnixMilli()-startTime)
 		}
 
 		// Trigger actions for a new payload built.
@@ -294,6 +348,22 @@ func (cl *CLMocker) stressMinePOSBlock() {
 		// Trigger actions for new executePayload broadcast
 		cl.NewExecutePayloadMutex.Unlock()
 		cl.NewExecutePayloadMutex.LockReset()
+
+		// Stress forkchoiceUpdated to point to the dummy payloads we sent
+		if dummyPayloadExecutionCount > 0 {
+			startTime := time.Now().UnixMilli()
+			for i := 0; i < dummyPayloadExecutionCount; i++ {
+				// Save the hash of this payload
+				cl.LatestForkchoice.HeadBlockHash = dummyPayloadHashes[i]
+				// Broadcast the executePayload to all clients
+				for i, resp := range cl.broadcastForkchoiceUpdated(&cl.LatestForkchoice, nil) {
+					if resp.Status != "SUCCESS" {
+						fmt.Printf("resp (%v): %v\n", i, resp)
+					}
+				}
+			}
+			fmt.Printf("stressMinePOSBlock: ForkchoiceUpdated %v dummy payloads in %v ms\n", dummyPayloadExecutionCount, time.Now().UnixMilli()-startTime)
+		}
 
 		// Broadcast forkchoice updated with new HeadBlock to all clients
 		cl.LatestForkchoice.HeadBlockHash = cl.LatestPayloadBuilt.BlockHash

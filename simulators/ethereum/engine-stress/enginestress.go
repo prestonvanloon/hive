@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -23,7 +22,7 @@ func badBlockNumberStress(t *TestEnv) {
 	if !t.WaitForPoSSync() {
 		t.Fatalf("FAIL (%v): Timeout on PoS sync", t.TestName)
 	}
-	badBlockInsertCount := 300
+	badBlockInsertCount := 30
 	for badBlockInsertCount > 0 {
 		// Wait for a new Payload
 		t.CLMock.NewGetPayloadMutex.LockSet()
@@ -41,7 +40,6 @@ func badBlockNumberStress(t *TestEnv) {
 		fmt.Printf("INFO (%v): err=%v\n", t.TestName, err)
 		t.CLMock.NewGetPayloadMutex.Unlock()
 
-		time.Sleep(time.Second)
 		badBlockInsertCount--
 	}
 }
