@@ -2,16 +2,18 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/ethereum/hive/hivesim"
 	"github.com/ethereum/hive/simulators/eth2/testnet/setup"
 	"github.com/protolambda/zrnt/eth2/beacon/common"
 	"github.com/protolambda/zrnt/eth2/configs"
-	"strings"
-	"time"
 )
 
 // PreparedTestnet has all the options for starting nodes, ready to build the network.
 type PreparedTestnet struct {
+	*hivesim.T
 	// Consensus chain configuration
 	spec *common.Spec
 	// Execution chain configuration and genesis info
@@ -109,6 +111,7 @@ func prepareTestnet(t *hivesim.T, valCount uint64, keyTranches uint64) *Prepared
 
 	t.Log("prepared testnet!")
 	return &PreparedTestnet{
+		T:                     t,
 		spec:                  spec,
 		eth1Genesis:           eth1Genesis,
 		eth2Genesis:           state,
@@ -125,25 +128,34 @@ func prepareTestnet(t *hivesim.T, valCount uint64, keyTranches uint64) *Prepared
 func (p *PreparedTestnet) createTestnet(t *hivesim.T) *Testnet {
 	time, _ := p.eth2Genesis.GenesisTime()
 	valRoot, _ := p.eth2Genesis.GenesisValidatorsRoot()
-	return &Testnet{
-		t:                     t,
+
+	newTestnet := &Testnet{
+		T:                     t,
 		genesisTime:           time,
 		genesisValidatorsRoot: valRoot,
 		spec:                  p.spec,
 		eth1Genesis:           p.eth1Genesis,
+		elNetworkName:         "ExecutionNetwork",
+		bcNetworkName:         "BeaconChainNetwork",
+		groupNetworks:         make(map[int]string),
+		containerGroupNetwork: make(map[string]int),
 	}
+	if err := newTestnet.CreateNetworks(); err != nil {
+		t.Fatal("Unable to create required networks", err)
+	}
+	return newTestnet
 }
 
-func (p *PreparedTestnet) startEth1Node(testnet *Testnet, eth1Def *hivesim.ClientDefinition) {
-	testnet.t.Logf("starting eth1 node: %s (%s)", eth1Def.Name, eth1Def.Version)
+func (p *PreparedTestnet) startEth1Node(testnet *Testnet, eth1Def *hivesim.ClientDefinition, groupNetworkIndex int) {
+	testnet.T.Logf("starting eth1 node: %s (%s)", eth1Def.Name, eth1Def.Version)
 
 	opts := []hivesim.StartOption{
 		p.eth1ConfigOpt, p.commonEth1Params,
 	}
 	if len(testnet.eth1) > 0 {
-		bootnode, err := testnet.eth1[0].EnodeURL()
+		bootnode, err := testnet.eth1[0].EnodeURLNetwork(testnet.T.Sim, testnet.T, testnet.elNetworkName)
 		if err != nil {
-			testnet.t.Fatalf("failed to get eth1 bootnode URL: %v", err)
+			testnet.T.Fatalf("failed to get eth1 bootnode URL: %v", err)
 		}
 
 		// Make the client connect to the first eth1 node, as a bootnode for the eth1 net
@@ -153,27 +165,37 @@ func (p *PreparedTestnet) startEth1Node(testnet *Testnet, eth1Def *hivesim.Clien
 		opts = append(opts, hivesim.Params{"HIVE_MINER": "0x1212121212121212121212121212121212121212"})
 	}
 
-	en := &Eth1Node{testnet.t.StartClient(eth1Def.Name, opts...)}
+	en := &Eth1Node{testnet.T.StartClient(eth1Def.Name, opts...)}
+	if err := testnet.ConnectClientToExecutionNetwork(en.Client); err != nil {
+		testnet.T.Fatalf("Unable to add ExecutionClient %v to ExecutionNetwork: %v", en.Container, err)
+	}
+	if err := testnet.AddClientToGroupNetwork(en.Client, groupNetworkIndex); err != nil {
+		testnet.T.Fatalf("Unable to add ExecutionClient %v to group network: %v", en.Container, err)
+	}
 	testnet.eth1 = append(testnet.eth1, en)
 }
 
-func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.ClientDefinition, eth1Endpoints []int) {
-	testnet.t.Logf("starting beacon node: %s (%s)", beaconDef.Name, beaconDef.Version)
+func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.ClientDefinition, eth1Endpoints []int, groupNetworkIndex int) {
+	testnet.T.Logf("starting beacon node: %s (%s)", beaconDef.Name, beaconDef.Version)
 
 	opts := []hivesim.StartOption{p.eth2ConfigOpt, p.beaconStateOpt, p.commonBeaconParams}
 	// Hook up beacon node to (maybe multiple) eth1 nodes
 	for _, index := range eth1Endpoints {
 		if index < 0 || index >= len(testnet.eth1) {
-			testnet.t.Fatalf("only have %d eth1 nodes, cannot find index %d for BN", len(testnet.eth1), index)
+			testnet.T.Fatalf("only have %d eth1 nodes, cannot find index %d for BN", len(testnet.eth1), index)
 		}
 	}
 
 	var addrs []string
 	for _, index := range eth1Endpoints {
 		eth1Node := testnet.eth1[index]
-		userRPC, err := eth1Node.UserRPCAddress()
+		ip, err := testnet.GetClientGroupNetworkIP(eth1Node.Client)
 		if err != nil {
-			testnet.t.Fatalf("eth1 node used for beacon without available RPC: %v", err)
+			testnet.T.Fatalf("Unable to obtain IP for eth1 node: %v", err)
+		}
+		userRPC, err := eth1Node.UserRPCAddressWithIP(ip)
+		if err != nil {
+			testnet.T.Fatalf("eth1 node used for beacon without available RPC: %v", err)
 		}
 		addrs = append(addrs, userRPC)
 	}
@@ -182,7 +204,7 @@ func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.C
 	if len(testnet.beacons) > 0 {
 		bootnodeENR, err := testnet.beacons[0].ENR()
 		if err != nil {
-			testnet.t.Fatalf("failed to get ENR as bootnode for beacon node: %v", err)
+			testnet.T.Fatalf("failed to get ENR as bootnode for beacon node: %v", err)
 		}
 		opts = append(opts, hivesim.Params{"HIVE_ETH2_BOOTNODE_ENRS": bootnodeENR})
 	}
@@ -191,23 +213,33 @@ func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.C
 	//if p.configName != "mainnet" && hasBuildTarget(beaconDef, p.configName) {
 	//	opts = append(opts, hivesim.WithBuildTarget(p.configName))
 	//}
-	bn := NewBeaconNode(testnet.t.StartClient(beaconDef.Name, opts...))
+	bn := NewBeaconNode(testnet.T.StartClient(beaconDef.Name, opts...))
+	if err := testnet.ConnectClientToBeaconNetwork(bn.Client); err != nil {
+		testnet.T.Fatalf("Unable to add BeaconNode %v to BeaconNetwork: %v", bn.Container, err)
+	}
+	if err := testnet.AddClientToGroupNetwork(bn.Client, groupNetworkIndex); err != nil {
+		testnet.T.Fatalf("Unable to add BeaconNode %v to group network: %v", bn.Container, err)
+	}
 	testnet.beacons = append(testnet.beacons, bn)
 }
 
-func (p *PreparedTestnet) startValidatorClient(testnet *Testnet, validatorDef *hivesim.ClientDefinition, bnIndex int, keyIndex int) {
-	testnet.t.Logf("starting validator client: %s (%s)", validatorDef.Name, validatorDef.Version)
+func (p *PreparedTestnet) startValidatorClient(testnet *Testnet, validatorDef *hivesim.ClientDefinition, bnIndex int, keyIndex int, groupNetworkIndex int) {
+	testnet.T.Logf("starting validator client: %s (%s)", validatorDef.Name, validatorDef.Version)
 
 	if bnIndex >= len(testnet.beacons) {
-		testnet.t.Fatalf("only have %d beacon nodes, cannot find index %d for VC", len(testnet.beacons), bnIndex)
+		testnet.T.Fatalf("only have %d beacon nodes, cannot find index %d for VC", len(testnet.beacons), bnIndex)
 	}
 	bn := testnet.beacons[bnIndex]
 	// Hook up validator to beacon node
+	bn_ip, err := testnet.GetClientGroupNetworkIP(bn.Client)
+	if err != nil {
+		testnet.T.Fatalf("Unable to get BeaconNode %v ip group network: %v", bn.Container, err)
+	}
 	bnAPIOpt := hivesim.Params{
-		"HIVE_ETH2_BN_API_IP": bn.IP.String(),
+		"HIVE_ETH2_BN_API_IP": bn_ip,
 	}
 	if keyIndex >= len(p.keyTranches) {
-		testnet.t.Fatalf("only have %d key tranches, cannot find index %d for VC", len(p.keyTranches), keyIndex)
+		testnet.T.Fatalf("only have %d key tranches, cannot find index %d for VC", len(p.keyTranches), keyIndex)
 	}
 	keysOpt := p.keyTranches[keyIndex]
 	opts := []hivesim.StartOption{
@@ -217,6 +249,9 @@ func (p *PreparedTestnet) startValidatorClient(testnet *Testnet, validatorDef *h
 	//if p.configName != "mainnet" && hasBuildTarget(validatorDef, p.configName) {
 	//	opts = append(opts, hivesim.WithBuildTarget(p.configName))
 	//}
-	vc := &ValidatorClient{testnet.t.StartClient(validatorDef.Name, opts...)}
+	vc := &ValidatorClient{testnet.T.StartClient(validatorDef.Name, opts...)}
+	if err := testnet.AddClientToGroupNetwork(vc.Client, groupNetworkIndex); err != nil {
+		testnet.T.Fatalf("Unable to add ValidatorClient %v to group network: %v", vc.Container, err)
+	}
 	testnet.validators = append(testnet.validators, vc)
 }

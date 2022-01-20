@@ -4,16 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/hive/hivesim"
 	"github.com/protolambda/eth2api"
 	"github.com/protolambda/eth2api/client/nodeapi"
-	"net/http"
-	"time"
 )
 
 const (
 	PortUserRPC      = 8545
-	PortEngineRPC    = 8600
+	PortEngineRPC    = 8545 // TO BE CHANGED SOON
 	PortBeaconTCP    = 9000
 	PortBeaconUDP    = 9000
 	PortBeaconAPI    = 4000
@@ -29,8 +32,46 @@ type Eth1Node struct {
 	*hivesim.Client
 }
 
+func (en *Eth1Node) EnodeURLNetwork(sim *hivesim.Simulation, t *hivesim.T, network string) (string, error) {
+	originalEnode, err := en.EnodeURL()
+	if err != nil {
+		return "", err
+	}
+	n, err := enode.ParseV4(originalEnode)
+	if err != nil {
+		return "", err
+	}
+	netIP, err := sim.ContainerNetworkIP(t.SuiteID, network, en.Container)
+	if err != nil {
+		return "", err
+	}
+	// Check ports returned
+	tcpPort := n.TCP()
+	if tcpPort == 0 {
+		tcpPort = 30303
+	}
+	udpPort := n.UDP()
+	if udpPort == 0 {
+		udpPort = 30303
+	}
+	fixedIP := enode.NewV4(n.Pubkey(), net.ParseIP(netIP), tcpPort, udpPort)
+	return fixedIP.URLv4(), nil
+}
+
+func (en *Eth1Node) NetworkIP(sim *hivesim.Simulation, t *hivesim.T, network string) (string, error) {
+	netIP, err := sim.ContainerNetworkIP(t.SuiteID, network, en.Container)
+	if err != nil {
+		return "", err
+	}
+	return netIP, nil
+}
+
 func (en *Eth1Node) UserRPCAddress() (string, error) {
 	return fmt.Sprintf("http://%v:%d", en.IP, PortUserRPC), nil
+}
+
+func (en *Eth1Node) UserRPCAddressWithIP(ip string) (string, error) {
+	return fmt.Sprintf("http://%v:%d", ip, PortUserRPC), nil
 }
 
 func (en *Eth1Node) EngineRPCAddress() (string, error) {
@@ -60,8 +101,9 @@ func (bn *BeaconNode) ENR() (string, error) {
 	if err := nodeapi.Identity(ctx, bn.API, &out); err != nil {
 		return "", err
 	}
-	fmt.Printf("p2p addrs: %v\n", out.P2PAddresses)
-	fmt.Printf("peer id: %s\n", out.PeerID)
+	fmt.Printf("[%v] p2p addrs: %v\n", bn.Container, out.P2PAddresses)
+	fmt.Printf("[%v] peer id: %s\n", bn.Container, out.PeerID)
+	fmt.Printf("[%v] enr: %s\n", bn.Container, out.ENR)
 	return out.ENR, nil
 }
 

@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/ethereum/hive/hivesim"
 	"time"
+
+	"github.com/ethereum/hive/hivesim"
 )
 
 func jsonStr(v interface{}) string {
@@ -43,7 +44,8 @@ func (nc *ClientDefinitionsByRole) SimpleTestnetTest() hivesim.TestSpec {
 		Name:        "single-client-testnet",
 		Description: "This runs quick eth2 single-client type testnet, with 4 nodes and 2**14 (minimum) validators",
 		Run: func(t *hivesim.T) {
-			prep := prepareTestnet(t, 1<<14, 4)
+			clientGroupCount := uint64(4)
+			prep := prepareTestnet(t, 1<<14, clientGroupCount)
 			testnet := prep.createTestnet(t)
 
 			genesisTime := testnet.GenesisTime()
@@ -51,21 +53,21 @@ func (nc *ClientDefinitionsByRole) SimpleTestnetTest() hivesim.TestSpec {
 			t.Logf("created new testnet, genesis at %s (%s from now)", genesisTime, countdown)
 
 			// TODO: we can mix things for a multi-client testnet
-			if len(nc.Eth1) != 1 {
-				t.Fatalf("choose 1 eth1 client type")
+			if len(nc.Eth1) == 0 {
+				t.Fatalf("choose at least 1 eth1 client type")
 			}
-			if len(nc.Beacon) != 1 {
-				t.Fatalf("choose 1 beacon client type")
+			if len(nc.Beacon) == 0 {
+				t.Fatalf("choose at least 1 beacon client type")
 			}
-			if len(nc.Validator) != 1 {
-				t.Fatalf("choose 1 validator client type")
+			if len(nc.Validator) == 0 {
+				t.Fatalf("choose at least 1 validator client type")
 			}
 
 			// for each key partition, we start a validator client with its own beacon node and eth1 node
 			for i := 0; i < len(prep.keyTranches); i++ {
-				prep.startEth1Node(testnet, nc.Eth1[0])
-				prep.startBeaconNode(testnet, nc.Beacon[0], []int{i})
-				prep.startValidatorClient(testnet, nc.Validator[0], i, i)
+				prep.startEth1Node(testnet, nc.Eth1[i%len(nc.Eth1)], i)
+				prep.startBeaconNode(testnet, nc.Beacon[i%len(nc.Beacon)], []int{i}, i)
+				prep.startValidatorClient(testnet, nc.Validator[i%len(nc.Validator)], i, i, i)
 			}
 			t.Logf("started all nodes!")
 
