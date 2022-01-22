@@ -90,7 +90,7 @@ func (cn *ClientNetwork) ReconnectAllClients() error {
 		s = append(s, keyval{k, v})
 	}
 	sort.Slice(s, func(i int, j int) bool {
-		return s[i].val > s[j].val
+		return s[i].val < s[j].val
 	})
 
 	for _, kval := range s {
