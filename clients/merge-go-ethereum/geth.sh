@@ -163,6 +163,13 @@ if [ "$HIVE_ALLOW_UNPROTECTED_TX" != "" ]; then
     FLAGS="$FLAGS --rpc.allow-unprotected-txs"
 fi
 
+# parse and use the jwt secret token
+if [ "$HIVE_JWT_AUTH_TOKEN_SECRET" != "" ]; then
+    # TODO: This is incorrect, the secret must be within a file, not part of the cmd line itself,
+    # so, ideally, we should write this hex into a file, then pass the path to the file as parameter.
+    FLAGS="$FLAGS --jwt-secret $HIVE_JWT_AUTH_TOKEN_SECRET"
+fi
+
 # Run the go-ethereum implementation with the requested flags.
 FLAGS="$FLAGS --nat=none"
 echo "Running go-ethereum with flags $FLAGS"
