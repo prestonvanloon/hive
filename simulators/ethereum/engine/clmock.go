@@ -102,7 +102,7 @@ func (cl *CLMocker) CloseClients() {
 // Sets the specified client's chain head as Terminal PoW block by sending the initial forkchoiceUpdated.
 func (cl *CLMocker) setTTDBlockClient(ec *EngineClient) {
 	var td *TotalDifficultyHeader
-	if err := ec.c.CallContext(ec.Ctx(), &td, "eth_getBlockByNumber", "latest", false); err != nil {
+	if err := ec.cEth.CallContext(ec.Ctx(), &td, "eth_getBlockByNumber", "latest", false); err != nil {
 		cl.Fatalf("CLMocker: Could not get latest header: %v", err)
 	}
 	if td == nil {

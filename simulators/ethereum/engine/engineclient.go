@@ -13,11 +13,12 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/hive/hivesim"
+	"github.com/golang-jwt/jwt/v4"
 )
 
 // Execution API v1.0.0-alpha.5 changes this to 8550
 // https://github.com/ethereum/execution-apis/releases/tag/v1.0.0-alpha.5
-var EnginePortHTTP = 8545
+var EnginePortHTTP = 8551
 var EnginePortWS = 8546
 
 // EngineClient wrapper for Ethereum Engine RPC for testing purposes.
@@ -26,6 +27,7 @@ type EngineClient struct {
 	*hivesim.Client
 	c                       *rpc.Client
 	Eth                     *ethclient.Client
+	cEth                    *rpc.Client
 	IP                      net.IP
 	TerminalTotalDifficulty *big.Int
 
@@ -65,6 +67,7 @@ func NewEngineClient(t *hivesim.T, hc *hivesim.Client, ttd *big.Int) *EngineClie
 		Client:                  hc,
 		c:                       rpcHttpClient,
 		Eth:                     eth,
+		cEth:                    rpcClient,
 		IP:                      hc.IP,
 		TerminalTotalDifficulty: ttd,
 		lastCtx:                 nil,
@@ -78,7 +81,7 @@ func (ec *EngineClient) Equals(ec2 *EngineClient) bool {
 
 func (ec *EngineClient) checkTTD() bool {
 	var td *TotalDifficultyHeader
-	if err := ec.c.CallContext(ec.Ctx(), &td, "eth_getBlockByNumber", "latest", false); err != nil {
+	if err := ec.cEth.CallContext(ec.Ctx(), &td, "eth_getBlockByNumber", "latest", false); err != nil {
 		panic(err)
 	}
 	return td.TotalDifficulty.ToInt().Cmp(ec.TerminalTotalDifficulty) >= 0
@@ -161,21 +164,52 @@ type ForkChoiceResponse struct {
 	PayloadID     *beacon.PayloadID `json:"payloadId"`
 }
 
+// JWT Tokens
+func GetNewToken() (string, error) {
+	jwtSecretBytes := common.FromHex(jwtTokenSecret)
+	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iat": time.Now().Unix(),
+	})
+	tokenString, err := newToken.SignedString(jwtSecretBytes)
+	if err != nil {
+		return "", err
+	}
+	return tokenString, nil
+}
+
+func (ec *EngineClient) PrepareAuthCallToken() error {
+	newTokenString, err := GetNewToken()
+	if err != nil {
+		return err
+	}
+	ec.c.SetHeader("Authorization", fmt.Sprintf("Bearer %s", newTokenString))
+	return nil
+}
+
 // Engine API Call Methods
 func (ec *EngineClient) EngineForkchoiceUpdatedV1(ctx context.Context, fcState *beacon.ForkchoiceStateV1, pAttributes *beacon.PayloadAttributesV1) (ForkChoiceResponse, error) {
 	var result ForkChoiceResponse
+	if err := ec.PrepareAuthCallToken(); err != nil {
+		return result, err
+	}
 	err := ec.c.CallContext(ctx, &result, "engine_forkchoiceUpdatedV1", fcState, pAttributes)
 	return result, err
 }
 
 func (ec *EngineClient) EngineGetPayloadV1(ctx context.Context, payloadId *beacon.PayloadID) (beacon.ExecutableDataV1, error) {
 	var result beacon.ExecutableDataV1
+	if err := ec.PrepareAuthCallToken(); err != nil {
+		return result, err
+	}
 	err := ec.c.CallContext(ctx, &result, "engine_getPayloadV1", payloadId)
 	return result, err
 }
 
 func (ec *EngineClient) EngineNewPayloadV1(ctx context.Context, payload *beacon.ExecutableDataV1) (PayloadStatusV1, error) {
 	var result PayloadStatusV1
+	if err := ec.PrepareAuthCallToken(); err != nil {
+		return result, err
+	}
 	err := ec.c.CallContext(ctx, &result, "engine_newPayloadV1", payload)
 	return result, err
 }
