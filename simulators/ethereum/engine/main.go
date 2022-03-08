@@ -89,11 +89,15 @@ type TestSpec struct {
 	// When used, clique consensus mechanism is disabled.
 	// Default: None
 	ChainFile string
+
+	// Real Pow
+	RealPow bool
 }
 
 var allTests = append(
 	engineTests,
-	mergeTests...,
+	append(mergeTests,
+		bombTests...)...,
 )
 
 func main() {
@@ -103,6 +107,8 @@ func main() {
 Test Engine API tests using CL mocker to inject commands into clients after they 
 have reached the Terminal Total Difficulty.`[1:],
 	}
+	// Create a single hiveminer for the tests
+	hiveminer := NewHiveMiner()
 	for _, currentTest := range allTests {
 		currentTest := currentTest
 		genesisPath := "./init/genesis.json"
@@ -114,12 +120,16 @@ have reached the Terminal Total Difficulty.`[1:],
 		// Calculate and set the TTD for this test
 		ttd := calcRealTTD(genesisPath, currentTest.TTD)
 		newParams := clientEnv.Set("HIVE_TERMINAL_TOTAL_DIFFICULTY", fmt.Sprintf("%d", ttd))
-		if currentTest.ChainFile != "" {
+		if currentTest.RealPow || currentTest.ChainFile != "" {
 			// We are using a Proof of Work chain file, remove all clique-related settings
 			// TODO: Nethermind still requires HIVE_MINER for the Engine API
-			// delete(newParams, "HIVE_MINER")
 			delete(newParams, "HIVE_CLIQUE_PRIVATEKEY")
 			delete(newParams, "HIVE_CLIQUE_PERIOD")
+		}
+		if currentTest.RealPow {
+			newParams = newParams.Set("HIVE_POW_MINER", "true")
+		}
+		if currentTest.ChainFile != "" {
 			// Add the new file to be loaded as chain.rlp
 			testFiles = testFiles.Set("/chain.rlp", "./chains/"+currentTest.ChainFile)
 		}
@@ -135,7 +145,7 @@ have reached the Terminal Total Difficulty.`[1:],
 					timeout = time.Second * time.Duration(currentTest.TimeoutSeconds)
 				}
 				// Run the test case
-				RunTest(currentTest.Name, big.NewInt(ttd), timeout, t, c, currentTest.Run, newParams, testFiles)
+				RunTest(currentTest.Name, big.NewInt(ttd), timeout, t, c, currentTest.Run, newParams, testFiles, hiveminer)
 			},
 		})
 	}

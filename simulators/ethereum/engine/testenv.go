@@ -37,6 +37,9 @@ type TestEnv struct {
 	// Global test timeout
 	Timeout <-chan time.Time
 
+	// Hive PoW Custom Miner
+	HiveMiner *HiveMiner
+
 	// Client parameters used to launch the default client
 	ClientParams hivesim.Params
 	ClientFiles  hivesim.Params
@@ -52,7 +55,7 @@ type TestEnv struct {
 	syncCancel context.CancelFunc
 }
 
-func RunTest(testName string, ttd *big.Int, timeout time.Duration, t *hivesim.T, c *hivesim.Client, fn func(*TestEnv), cParams hivesim.Params, cFiles hivesim.Params) {
+func RunTest(testName string, ttd *big.Int, timeout time.Duration, t *hivesim.T, c *hivesim.Client, fn func(*TestEnv), cParams hivesim.Params, cFiles hivesim.Params, miner *HiveMiner) {
 	// Setup the CL Mocker for this test
 	clMocker := NewCLMocker(t, ttd)
 	// Defer closing all clients
@@ -75,7 +78,7 @@ func RunTest(testName string, ttd *big.Int, timeout time.Duration, t *hivesim.T,
 	// Create Engine client from main hivesim.Client to be used by tests
 	ec := NewEngineClient(t, c, ttd)
 	defer ec.Close()
-
+	miner.UpdateEthEndpoint(fmt.Sprintf("http://%v:%v/", c.IP, EthPortHTTP))
 	rpcClient, _ := rpc.DialHTTPWithClient(fmt.Sprintf("http://%v:%v/", c.IP, EthPortHTTP), client)
 	defer rpcClient.Close()
 	env := &TestEnv{
@@ -87,6 +90,7 @@ func RunTest(testName string, ttd *big.Int, timeout time.Duration, t *hivesim.T,
 		CLMock:       clMocker,
 		ClientParams: cParams,
 		ClientFiles:  cFiles,
+		HiveMiner:    miner,
 	}
 
 	// Defer closing the last context
