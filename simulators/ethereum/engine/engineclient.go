@@ -184,6 +184,14 @@ var PayloadStatuses = map[PayloadStatus]string{
 	InvalidBlockHash:     "INVALID_BLOCK_HASH",
 }
 
+func (b PayloadStatus) String() string {
+	str, ok := PayloadStatuses[b]
+	if !ok {
+		return "UNKNOWN"
+	}
+	return str
+}
+
 func (b PayloadStatus) MarshalText() ([]byte, error) {
 	str, ok := PayloadStatuses[b]
 	if !ok {

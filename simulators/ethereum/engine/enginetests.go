@@ -57,7 +57,19 @@ var engineTests = []TestSpec{
 	},
 	{
 		Name: "Bad Hash on NewPayload",
-		Run:  badHashOnExecPayload,
+		Run:  badHashOnNewPayloadGen(false, false),
+	},
+	{
+		Name: "Bad Hash on NewPayload Syncing",
+		Run:  badHashOnNewPayloadGen(true, false),
+	},
+	{
+		Name: "Bad Hash on NewPayload Side Chain",
+		Run:  badHashOnNewPayloadGen(false, true),
+	},
+	{
+		Name: "Bad Hash on NewPayload Side Chain Syncing",
+		Run:  badHashOnNewPayloadGen(true, true),
 	},
 	{
 		Name: "ParentHash==BlockHash on NewPayload",
@@ -435,59 +447,116 @@ func preTTDFinalizedBlockHash(t *TestEnv) {
 	}
 }
 
-// Corrupt the hash of a valid payload, client should reject the payload
-func badHashOnExecPayload(t *TestEnv) {
-	// Wait until TTD is reached by this client
-	t.CLMock.waitForTTD()
+// Corrupt the hash of a valid payload, client should reject the payload.
+// All possible scenarios:
+//    (fcU)
+//	┌────────┐        ┌────────────────────────┐
+//	│  HEAD  │◄───────┤ Bad Hash (!Sync,!Side) │
+//	└────┬───┘        └────────────────────────┘
+//		 │
+//		 │
+//	┌────▼───┐        ┌────────────────────────┐
+//	│ HEAD-1 │◄───────┤ Bad Hash (!Sync, Side) │
+//	└────┬───┘        └────────────────────────┘
+//		 │
+//
+//
+//	  (fcU)
+//	********************  ┌───────────────────────┐
+//	*  (Unknown) HEAD  *◄─┤ Bad Hash (Sync,!Side) │
+//	********************  └───────────────────────┘
+//		 │
+//		 │
+//	┌────▼───┐            ┌───────────────────────┐
+//	│ HEAD-1 │◄───────────┤ Bad Hash (Sync, Side) │
+//	└────┬───┘            └───────────────────────┘
+//		 │
+//
 
-	// Produce blocks before starting the test
-	t.CLMock.produceBlocks(5, BlockProcessCallbacks{})
+func badHashOnNewPayloadGen(syncing bool, sidechain bool) func(*TestEnv) {
 
-	var invalidPayloadHash common.Hash
+	return func(t *TestEnv) {
+		// Wait until TTD is reached by this client
+		t.CLMock.waitForTTD()
 
-	t.CLMock.produceSingleBlock(BlockProcessCallbacks{
-		// Run test after the new payload has been obtained
-		OnGetPayload: func() {
-			// Alter hash on the payload and send it to client, should produce an error
-			alteredPayload := t.CLMock.LatestPayloadBuilt
-			invalidPayloadHash = alteredPayload.BlockHash
-			invalidPayloadHash[common.HashLength-1] = byte(255 - invalidPayloadHash[common.HashLength-1])
-			alteredPayload.BlockHash = invalidPayloadHash
-			newPayloadResp, err := t.Engine.EngineNewPayloadV1(t.Engine.Ctx(), &alteredPayload)
-			// Execution specification::
-			// - {status: INVALID_BLOCK_HASH, latestValidHash: null, validationError: null} if the blockHash validation has failed
-			if err != nil {
-				t.Fatalf("FAIL (%s): Incorrect block hash in execute payload resulted in error: %v", t.TestName, err)
-			}
-			if newPayloadResp.Status != InvalidBlockHash {
-				t.Fatalf("FAIL (%s): Incorrect block hash in execute payload returned unexpected status (exp INVALID_BLOCK_HASH): %v", t.TestName, newPayloadResp.Status)
-			}
-		},
-	})
+		// Produce blocks before starting the test
+		t.CLMock.produceBlocks(5, BlockProcessCallbacks{})
 
-	// Lastly, attempt to build on top of the invalid payload
-	t.CLMock.produceSingleBlock(BlockProcessCallbacks{
-		// Run test after the new payload has been obtained
-		OnGetPayload: func() {
-			alteredPayload, err := customizePayload(&t.CLMock.LatestPayloadBuilt, &CustomPayloadData{
-				ParentHash: &invalidPayloadHash,
-			})
-			if err != nil {
-				t.Fatalf("FAIL (%s): Unable to modify payload: %v", t.TestName, err)
-			}
-			resp, err := t.Engine.EngineNewPayloadV1(t.Engine.Ctx(), alteredPayload)
-			if err != nil {
-				t.Fatalf("FAIL (%s): Valid EngineNewPayload on top of Invalid Payload was rejected: %v", t.TestName, err)
-			}
-			// Response status can be ACCEPTED (since parent payload could have been thrown out by the client)
-			// or INVALID (client still has the payload and can verify that this payload is incorrectly building on top of it),
-			// but a VALID response is incorrect.
-			if resp.Status == Valid {
-				t.Fatalf("FAIL (%s): Unexpected response on valid payload on top of invalid payload: %v", t.TestName, resp)
-			}
-		},
-	})
+		var (
+			alteredPayload     ExecutableDataV1
+			invalidPayloadHash common.Hash
+		)
 
+		t.CLMock.produceSingleBlock(BlockProcessCallbacks{
+			// Run test after the new payload has been obtained
+			OnGetPayload: func() {
+				// Alter hash on the payload and send it to client, should produce an error
+				alteredPayload = t.CLMock.LatestPayloadBuilt
+				invalidPayloadHash = alteredPayload.BlockHash
+				invalidPayloadHash[common.HashLength-1] = byte(255 - invalidPayloadHash[common.HashLength-1])
+				alteredPayload.BlockHash = invalidPayloadHash
+
+				if !syncing && sidechain {
+					alteredPayload.ParentHash = t.CLMock.LatestFinalizedHeader.ParentHash
+				} else if syncing {
+					// We need to send an fcU to put the client in SYNCING state.
+					randomHeadBlock := common.Hash{}
+					rand.Read(randomHeadBlock[:])
+					fcU := ForkchoiceStateV1{
+						HeadBlockHash:      randomHeadBlock,
+						SafeBlockHash:      t.CLMock.LatestFinalizedHeader.Hash(),
+						FinalizedBlockHash: t.CLMock.LatestFinalizedHeader.Hash(),
+					}
+					resp, err := t.Engine.EngineForkchoiceUpdatedV1(t.Engine.Ctx(), &fcU, nil)
+					if err != nil {
+						t.Fatalf("FAIL (%s): Error while sending ForkchoiceUpdated to put client in SYNCING state: %v", t.TestName, err)
+					}
+					if resp.PayloadStatus.Status != Syncing {
+						t.Fatalf("FAIL (%s): Client was not set in syncing state: %s", t.TestName, resp.PayloadStatus.Status.String())
+					}
+					if sidechain {
+						alteredPayload.ParentHash = t.CLMock.LatestFinalizedHeader.Hash()
+					} else {
+						alteredPayload.ParentHash = randomHeadBlock
+					}
+				}
+
+				newPayloadResp, err := t.Engine.EngineNewPayloadV1(t.Engine.Ctx(), &alteredPayload)
+				// Execution specification::
+				// - {status: INVALID_BLOCK_HASH, latestValidHash: null, validationError: null} if the blockHash validation has failed
+				if err != nil {
+					t.Fatalf("FAIL (%s): Incorrect block hash in execute payload resulted in error: %v", t.TestName, err)
+				}
+				if newPayloadResp.Status != InvalidBlockHash {
+					t.Fatalf("FAIL (%s): Incorrect block hash in execute payload returned unexpected status (exp INVALID_BLOCK_HASH): %s", t.TestName, newPayloadResp.Status.String())
+				}
+			},
+		})
+
+		// Lastly, attempt to build on top of the invalid payload
+		t.CLMock.produceSingleBlock(BlockProcessCallbacks{
+			// Run test after the new payload has been obtained
+			OnGetPayload: func() {
+				alteredPayload, err := customizePayload(&t.CLMock.LatestPayloadBuilt, &CustomPayloadData{
+					ParentHash: &invalidPayloadHash,
+				})
+				if err != nil {
+					t.Fatalf("FAIL (%s): Unable to modify payload: %v", t.TestName, err)
+				}
+				resp, err := t.Engine.EngineNewPayloadV1(t.Engine.Ctx(), alteredPayload)
+				if err != nil {
+					t.Fatalf("FAIL (%s): Valid EngineNewPayload on top of Invalid Payload was rejected: %v", t.TestName, err)
+				}
+				// Response status can be ACCEPTED (since parent payload could have been thrown out by the client)
+				// or INVALID (client still has the payload and can verify that this payload is incorrectly building on top of it),
+				// but a VALID response is incorrect.
+				if resp.Status == Valid {
+					t.Fatalf("FAIL (%s): Unexpected response on valid payload on top of invalid payload: %v", t.TestName, resp)
+				}
+			},
+		})
+
+	}
 }
 
 // Copy the parentHash into the blockHash, client should reject the payload
