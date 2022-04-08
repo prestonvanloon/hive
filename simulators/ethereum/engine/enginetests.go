@@ -1359,7 +1359,7 @@ func outOfOrderPayloads(t *TestEnv) {
 	secondaryEngineClients := make([]*EngineClient, len(allClients))
 
 	for i, client := range allClients {
-		_, ec, err := t.StartClient(client, t.ClientParams, t.MainTTD())
+		_, ec, err := t.StartClient(client.Name, t.ClientParams, t.MainTTD())
 		secondaryEngineClients[i] = ec
 
 		if err != nil {
@@ -1633,7 +1633,7 @@ func postMergeSync(t *TestEnv) {
 	newParams = newParams.Set("HIVE_MINER", "")
 
 	for _, client := range allClients {
-		c, ec, err := t.StartClient(client, newParams, t.MainTTD())
+		c, ec, err := t.StartClient(client.Name, newParams, t.MainTTD())
 		if err != nil {
 			t.Fatalf("FAIL (%s): Unable to start client (%v): %v", t.TestName, client, err)
 		}
