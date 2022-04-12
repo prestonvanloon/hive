@@ -851,7 +851,8 @@ func invalidPayloadTestCaseGen(payloadField string, syncing bool) func(*TestEnv)
 					// Execution specification::
 					// {status: SYNCING, latestValidHash: null, validationError: null}
 					// if the payload extends the canonical chain and requisite data for its validation is missing
-					expectedState = Syncing
+					// expectedState = Syncing
+					expectedState = Accepted
 				} else if payloadField == "ParentHash" {
 					// Execution specification::
 					// {status: ACCEPTED, latestValidHash: null, validationError: null} if the following conditions are met:
