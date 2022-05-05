@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"math/rand"
@@ -134,12 +135,20 @@ var engineTests = []TestSpec{
 
 	// Invalid Payload Re-Org Tests
 	{
-		Name: "Re-Org to Chain Missing Invalid Parent (Invalid after common ancestor)",
-		Run:  reOrgToChainMissingInvalidParentGen(1),
+		Name: "Re-Org to Chain Missing Invalid Parent (Invalid payload after common ancestor, reveal using newPayload)",
+		Run:  reOrgToChainMissingInvalidParentGen(1, false),
 	},
 	{
-		Name: "Re-Org to Chain Missing Invalid Parent (Invalid two payloads after common ancestor)",
-		Run:  reOrgToChainMissingInvalidParentGen(3),
+		Name: "Re-Org to Chain Missing Invalid Parent (Invalid payload 3rd after common ancestor, reveal using newPayload)",
+		Run:  reOrgToChainMissingInvalidParentGen(3, false),
+	},
+	{
+		Name: "Re-Org to Chain Missing Invalid Parent (Invalid payload 5th after common ancestor, reveal using sync)",
+		Run:  reOrgToChainMissingInvalidParentGen(5, true),
+	},
+	{
+		Name: "Re-Org to Chain Missing Invalid Parent (Invalid head, reveal using sync)",
+		Run:  reOrgToChainMissingInvalidParentGen(10, true),
 	},
 
 	// Eth RPC Status on ForkchoiceUpdated Events
@@ -767,8 +776,25 @@ func invalidPayloadTestCaseGen(payloadField string) func(*TestEnv) {
 // Then reveal the invalid payload and expect that the client rejects it and rejects forkchoice updated calls to this chain.
 // The invalid_index parameter determines how many payloads apart is the common ancestor from the block that invalidates the chain,
 // with a value of 1 meaning that the immediate payload after the common ancestor will be invalid.
-func reOrgToChainMissingInvalidParentGen(invalid_index int) func(*TestEnv) {
+func reOrgToChainMissingInvalidParentGen(invalid_index int, p2psync bool) func(*TestEnv) {
 	return func(t *TestEnv) {
+		var secondaryEngineTest *TestEngineClient
+		if p2psync {
+			// To allow having the invalid payload delivered via P2P, we need a second client to serve the payload
+			enode, err := t.Engine.EnodeURL()
+			if err != nil {
+				t.Fatalf("FAIL (%s): Unable to obtain bootnode: %v", t.TestName, err)
+			}
+			newParams := t.ClientParams.Set("HIVE_BOOTNODE", fmt.Sprintf("%s", enode))
+			newParams = newParams.Set("HIVE_MINER", "")
+			secondaryClient, secondaryEngine, err := t.StartClient(t.Client.Type, newParams, t.MainTTD())
+			if err != nil {
+				t.Fatalf("FAIL (%s): Unable to spawn a secondary client: %v", t.TestName, err)
+			}
+			t.CLMock.AddEngineClient(t.T, secondaryClient, t.MainTTD())
+			secondaryEngineTest = NewTestEngineClient(t, secondaryEngine)
+		}
+
 		// Wait until TTD is reached by this client
 		t.CLMock.waitForTTD()
 
@@ -804,11 +830,14 @@ func reOrgToChainMissingInvalidParentGen(invalid_index int) func(*TestEnv) {
 					// This is the payload we are looking to invalidate, this must be invalid
 					invStateRoot := common.Hash{}
 					rand.Read(invStateRoot[:])
-					alternatePayload, err = customizePayload(&t.CLMock.LatestPayloadBuilt, &CustomPayloadData{
+					t.Logf("INFO (%s): Invalid State Root (Random number): %v", t.TestName, invStateRoot)
+					customPayloadData := CustomPayloadData{
 						StateRoot:  &invStateRoot,
 						ParentHash: &altChainPayloads[len(altChainPayloads)-1].BlockHash,
 						PrevRandao: &prevRandao,
-					})
+					}
+					alternatePayload, err = customizePayload(&t.CLMock.LatestPayloadBuilt, &customPayloadData)
+					t.Logf("INFO (%s): Invalid alternate payload (Invalid State Root): %s", t.TestName, customPayloadData.String())
 				} else {
 					// Modify the created payload only to reference the previous parent in the B chain
 					alternatePayload, err = customizePayload(&t.CLMock.LatestPayloadBuilt, &CustomPayloadData{
@@ -823,38 +852,109 @@ func reOrgToChainMissingInvalidParentGen(invalid_index int) func(*TestEnv) {
 			},
 		})
 
-		// Now let's send the alternate chain to the client using newPayload in reverse order
-		for i := n - 1; i >= 0; i-- {
+		// Send the fcU, this is before we send all the payloads from the alternative chain.
+		// At this point is impossible to give a latestValidHash, since we don't know the required information.
+		s := t.TestEngine.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
+			HeadBlockHash:      altChainPayloads[n].BlockHash,
+			SafeBlockHash:      cA.BlockHash,
+			FinalizedBlockHash: cA.BlockHash,
+		}, nil)
+		s.ExpectPayloadStatus(Syncing)
+		s.ExpectLatestValidHash(nil)
+
+		// Now let's send the alternate chain to the client using newPayload
+		for i := 1; i <= n; i++ {
 			// Send the payload
-			r := t.TestEngine.TestEngineNewPayloadV1(altChainPayloads[i])
-			if i == 1 {
+			t.Logf("INFO (%s): Invalid chain payload %d: %v", t.TestName, i, altChainPayloads[i].BlockHash)
+			if p2psync {
+				if i < invalid_index {
+					// Payloads before the invalid payload are sent to the secondary client
+					r := secondaryEngineTest.TestEngineNewPayloadV1(altChainPayloads[i])
+					r.ExpectStatus(Valid)
+					s := secondaryEngineTest.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
+						HeadBlockHash:      altChainPayloads[i].BlockHash,
+						SafeBlockHash:      cA.BlockHash,
+						FinalizedBlockHash: cA.BlockHash,
+					}, nil)
+					s.ExpectPayloadStatus(Valid)
+					/*
+						p := NewTestEthClient(t, secondaryEngineTest.Engine.Eth).TestBlockByNumber(nil)
+						p.ExpectHash(altChainPayloads[invalid_index-1].BlockHash)
+					*/
+
+				} else {
+					// Payloads on and after the invalid payload are sent to the main client,
+					r := t.TestEngine.TestEngineNewPayloadV1(altChainPayloads[i])
+					t.Logf("INFO (%s): Response from main client: %v", t.TestName, r.Status)
+					s := t.TestEngine.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
+						HeadBlockHash:      altChainPayloads[i].BlockHash,
+						SafeBlockHash:      altChainPayloads[i].BlockHash,
+						FinalizedBlockHash: altChainPayloads[i].BlockHash,
+					}, nil)
+					t.Logf("INFO (%s): Response from main client fcu: %v", t.TestName, s.Response.PayloadStatus)
+
+					if i == n {
+						for {
+							// resend last payload until we get an invalid response
+							r := t.TestEngine.TestEngineNewPayloadV1(altChainPayloads[i])
+							t.Logf("INFO (%s): Response from main client: %v", t.TestName, r.Status)
+							s := t.TestEngine.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
+								HeadBlockHash:      altChainPayloads[i].BlockHash,
+								SafeBlockHash:      altChainPayloads[i].BlockHash,
+								FinalizedBlockHash: altChainPayloads[i].BlockHash,
+							}, nil)
+							t.Logf("INFO (%s): Response from main client fcu: %v", t.TestName, s.Response.PayloadStatus)
+
+							if r.Status.Status == Invalid {
+								break
+							} else if r.Status.Status == Valid {
+								latestBlock, err := t.Eth.BlockByNumber(t.Ctx(), nil)
+								if err != nil {
+									t.Fatalf("FAIL (%s): Unable to get latest block: %v", t.TestName, err)
+								}
+								// Print last 10 blocks
+								for k := latestBlock.Number().Int64() - 10; k <= latestBlock.Number().Int64(); k++ {
+									latestBlock, err := t.Eth.BlockByNumber(t.Ctx(), big.NewInt(k))
+									if err != nil {
+										t.Fatalf("FAIL (%s): Unable to get block %d: %v", t.TestName, k, err)
+									}
+									js, _ := json.MarshalIndent(latestBlock.Header(), "", "  ")
+									t.Logf("INFO (%s): Block %d: %s", t.TestName, k, js)
+								}
+
+								t.Fatalf("FAIL (%s): Client returned VALID on an invalid chain: %v", t.TestName, r.Status)
+							}
+
+							select {
+							case <-time.After(time.Second):
+							case <-t.Timeout:
+								t.Fatalf("FAIL (%s): Timeout waiting for client to sync to main client", t.TestName)
+							}
+						}
+					}
+				}
+			} else {
+				r := t.TestEngine.TestEngineNewPayloadV1(altChainPayloads[i])
 				if i == invalid_index {
 					// If this is the first payload after the common ancestor, and this is the payload we invalidated,
 					// then we have all the information to determine that this payload is invalid.
 					r.ExpectStatus(Invalid)
-					r.ExpectLatestValidHash(&cA.BlockHash)
+					r.ExpectLatestValidHash(&altChainPayloads[i-1].BlockHash)
+
+				} else if i > invalid_index {
+					r.ExpectStatus(Accepted)
+					r.ExpectLatestValidHash(nil)
 				} else {
-					// This is the first payload, but we did not invalidated the chain until after this one,
+					// This is the first payload, but we did not invalidate the chain until after this one,
 					// therefore the expected status is valid
 					r.ExpectStatus(Valid)
 				}
 
-			} else if i > 1 {
-				r.ExpectStatus(Accepted)
-				r.ExpectLatestValidHash(nil)
 			}
+		}
 
-			if i == n-1 {
-				// Send the fcU, this is before we send all the payloads from the alternative chain.
-				// At this point is impossible to give a latestValidHash, since we don't know the required information.
-				s := t.TestEngine.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
-					HeadBlockHash:      altChainPayloads[i].BlockHash,
-					SafeBlockHash:      cA.BlockHash,
-					FinalizedBlockHash: cA.BlockHash,
-				}, nil)
-				s.ExpectPayloadStatus(Syncing)
-				s.ExpectLatestValidHash(nil)
-			}
+		if p2psync {
+
 		}
 
 		// Resend the latest correct fcU
@@ -1274,7 +1374,7 @@ func outOfOrderPayloads(t *TestEnv) {
 	secondaryTestEngineClients := make([]*TestEngineClient, len(allClients))
 
 	for i, client := range allClients {
-		_, c, err := t.StartClient(client, t.ClientParams, t.MainTTD())
+		_, c, err := t.StartClient(client.Name, t.ClientParams, t.MainTTD())
 		secondaryTestEngineClients[i] = NewTestEngineClient(t, c)
 
 		if err != nil {
@@ -1311,7 +1411,7 @@ func outOfOrderPayloads(t *TestEnv) {
 	}
 	// Add the clients to the CLMocker
 	for _, tec := range secondaryTestEngineClients {
-		t.CLMock.AddEngineClient(t.T, tec.Client, t.MainTTD())
+		t.CLMock.AddEngineClient(t.T, tec.Engine.Client, t.MainTTD())
 	}
 
 	// Produce a single block on top of the canonical chain, all clients must accept this
@@ -1481,7 +1581,7 @@ func postMergeSync(t *TestEnv) {
 	newParams = newParams.Set("HIVE_MINER", "")
 
 	for _, client := range allClients {
-		c, ec, err := t.StartClient(client, newParams, t.MainTTD())
+		c, ec, err := t.StartClient(client.Name, newParams, t.MainTTD())
 		if err != nil {
 			t.Fatalf("FAIL (%s): Unable to start client (%v): %v", t.TestName, client, err)
 		}
