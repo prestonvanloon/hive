@@ -251,6 +251,19 @@ var ruleset = map[string]envvars{
 		"HIVE_FORK_BERLIN":         0,
 		"HIVE_FORK_LONDON":         0,
 	},
+	"Merge": {
+		"HIVE_FORK_HOMESTEAD": 0,
+		//"HIVE_FORK_DAO_BLOCK":      2000,
+		"HIVE_FORK_TANGERINE":            0,
+		"HIVE_FORK_SPURIOUS":             0,
+		"HIVE_FORK_BYZANTIUM":            0,
+		"HIVE_FORK_CONSTANTINOPLE":       0,
+		"HIVE_FORK_PETERSBURG":           0,
+		"HIVE_FORK_ISTANBUL":             0,
+		"HIVE_FORK_BERLIN":               0,
+		"HIVE_FORK_LONDON":               0,
+		"HIVE_TERMINAL_TOTAL_DIFFICULTY": 0,
+	},
 }
 
 func main() {
@@ -304,15 +317,17 @@ func loaderTest(t *hivesim.T) {
 		go func() {
 			defer wg.Done()
 			for test := range testCh {
-				t.Run(hivesim.TestSpec{
-					Name:        test.name,
-					Description: "Test source: " + testLink(test.filepath),
-					Run:         test.run,
-					// Regexp matching on Name is disabled here because it's already done
-					// in loadTests. Matching in loadTests is better because it has access
-					// to the full test file path.
-					AlwaysRun: true,
-				})
+				if strings.HasSuffix(test.name, "_Merge") {
+					t.Run(hivesim.TestSpec{
+						Name:        test.name,
+						Description: "Test source: " + testLink(test.filepath),
+						Run:         test.run,
+						// Regexp matching on Name is disabled here because it's already done
+						// in loadTests. Matching in loadTests is better because it has access
+						// to the full test file path.
+						AlwaysRun: true,
+					})
+				}
 			}
 		}()
 	}

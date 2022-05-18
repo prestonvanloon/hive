@@ -50,7 +50,7 @@ type btHeader struct {
 	TransactionsTrie common.Hash      `json:"transactionsRoot"`
 	UncleHash        common.Hash      `json:"sha3Uncles"`
 	ExtraData        []byte           `json:"extraData"`
-	Difficulty       *big.Int         `json:"difficulty`
+	Difficulty       *big.Int         `json:"difficulty"`
 	GasLimit         uint64           `json:"gasLimit"`
 	GasUsed          uint64           `json:"gasUsed"`
 	Timestamp        *big.Int         `json:"timestamp"`
@@ -76,7 +76,7 @@ func (b *btHeader) UnmarshalJSON(input []byte) error {
 		UncleHash           *common.Hash          `json:"sha3Uncles"`       // name in std json
 		UncleHashAlt        *common.Hash          `json:"uncleHash"`        // name in blocktests
 		ExtraData           *hexutil.Bytes        `json:"extraData"`
-		Difficulty          *math.HexOrDecimal256 `json:"difficulty`
+		Difficulty          *math.HexOrDecimal256 `json:"difficulty"`
 		GasLimit            *math.HexOrDecimal64  `json:"gasLimit"`
 		GasUsed             *math.HexOrDecimal64  `json:"gasUsed"`
 		Timestamp           *math.HexOrDecimal256 `json:"timestamp"`
