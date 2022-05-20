@@ -126,7 +126,7 @@ func (t *Testnet) WaitForFinality(ctx context.Context) (common.Checkpoint, error
 					}
 
 					var checkpoints eth2api.FinalityCheckpoints
-					if exists, err := beaconapi.FinalityCheckpoints(ctx, b.API, eth2api.StateIdRoot(headInfo.Header.Message.StateRoot), &checkpoints); err != nil {
+					if exists, err := beaconapi.FinalityCheckpoints(ctx, b.API, eth2api.StateIdSlot(headInfo.Header.Message.Slot), &checkpoints); err != nil {
 						ch <- res{err: fmt.Errorf("beacon %d: failed to poll finality checkpoint: %v", i, err)}
 						return
 					} else if !exists {
@@ -266,9 +266,11 @@ func (t *Testnet) VerifyProposers(ctx context.Context, checkpoint common.Checkpo
 
 		var validator eth2api.ValidatorResponse
 		if exists, err := beaconapi.StateValidator(ctx, t.beacons[0].API, eth2api.StateIdSlot(slot), eth2api.ValidatorIdIndex(proposerIndex), &validator); err != nil {
-			return fmt.Errorf("beacon %d: failed to retrieve validator: %v", 0, err)
+			// return fmt.Errorf("beacon %d: failed to retrieve validator: %v", 0, err)
+			continue
 		} else if !exists {
-			return fmt.Errorf("beacon %d: validator not found", 0)
+			// return fmt.Errorf("beacon %d: validator not found", 0).
+			continue
 		}
 		idx, err := t.ValidatorClientIndex([48]byte(validator.Validator.Pubkey))
 		if err != nil {

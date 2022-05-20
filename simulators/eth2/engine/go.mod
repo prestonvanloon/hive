@@ -12,7 +12,7 @@ require (
 	github.com/protolambda/go-keystorev4 v0.0.0-20210914214957-cf12d9c28a52
 	github.com/protolambda/zrnt v0.25.0
 	github.com/protolambda/ztyp v0.2.1
-	github.com/rauljordan/engine-proxy v0.0.0-20220511134016-2e057ad9d277
+	github.com/rauljordan/engine-proxy v0.0.0-20220517190449-e62b2e2f6e27
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/wealdtech/go-eth2-util v1.6.5
 )

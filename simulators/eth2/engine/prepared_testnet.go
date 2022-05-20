@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -117,6 +120,7 @@ func prepareTestnet(t *hivesim.T, env *testEnv, config *config) *PreparedTestnet
 		},
 		stateOpt,
 		consensusConfigOpts,
+		execNodeOpts,
 	)
 
 	validatorOpts := hivesim.Bundle(
@@ -125,6 +129,7 @@ func prepareTestnet(t *hivesim.T, env *testEnv, config *config) *PreparedTestnet
 			"HIVE_CHECK_LIVE_PORT": "0",
 		},
 		consensusConfigOpts,
+		execNodeOpts,
 	)
 
 	return &PreparedTestnet{
@@ -174,7 +179,8 @@ func (p *PreparedTestnet) startEth1Node(testnet *Testnet, eth1Def *hivesim.Clien
 		// Make the client connect to the first eth1 node, as a bootnode for the eth1 net
 		opts = append(opts, hivesim.Params{"HIVE_BOOTNODE": bootnode})
 	}
-	en := &Eth1Node{testnet.t.StartClient(eth1Def.Name, opts...)}
+	hc := testnet.t.StartClient(eth1Def.Name, opts...)
+	en := &Eth1Node{hc}
 	dest, _ := en.EngineRPCAddress()
 	testnet.eth1 = append(testnet.eth1, en)
 	simIP, err := testnet.t.Sim.ContainerNetworkIP(testnet.t.SuiteID, "bridge", "simulation")
@@ -185,7 +191,34 @@ func (p *PreparedTestnet) startEth1Node(testnet *Testnet, eth1Def *hivesim.Clien
 	if err != nil {
 		panic(err)
 	}
-	testnet.proxies = append(testnet.proxies, NewProxy(net.ParseIP(simIP), PortEngineRPC+len(testnet.eth1), dest, secret))
+	newProxy := NewProxy(net.ParseIP(simIP), PortEngineRPC+len(testnet.eth1), dest, secret)
+	testnet.proxies = append(testnet.proxies, newProxy)
+	/*
+		client := &http.Client{
+			Transport: &loggingRoundTrip{
+				t:     testnet.t,
+				hc:    hc,
+				inner: http.DefaultTransport,
+			},
+		}
+			var result string
+			// Try with the original eth1 endpoint
+				userRPC, _ := en.EngineRPCAddress()
+				rpcClient, _ := rpc.DialHTTPWithClient(userRPC, client)
+				err = rpcClient.CallContext(context.Background(), &result, "net_version")
+				if err != nil {
+					testnet.t.Fatalf("FAIL: %v", err)
+				}
+				rpcClient.Close()
+
+				userRPC, _ = newProxy.UserRPCAddress()
+				rpcClient, _ = rpc.DialHTTPWithClient(userRPC, client)
+				err = rpcClient.CallContext(context.Background(), &result, "net_version")
+				if err != nil {
+					testnet.t.Fatalf("FAIL: %v", err)
+				}
+				rpcClient.Close()
+	*/
 }
 
 func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.ClientDefinition, eth1Endpoints []int) {
@@ -202,13 +235,13 @@ func (p *PreparedTestnet) startBeaconNode(testnet *Testnet, beaconDef *hivesim.C
 	var addrs []string
 	var engineAddrs []string
 	for _, index := range eth1Endpoints {
-		eth1Node := testnet.proxies[index]
-		userRPC, err := eth1Node.UserRPCAddress()
+		// eth1Node := testnet.proxies[index]
+		userRPC, err := testnet.eth1[index].UserRPCAddress()
 		if err != nil {
 			testnet.t.Fatalf("eth1 node used for beacon without available RPC: %v", err)
 		}
 		addrs = append(addrs, userRPC)
-		engineRPC, err := eth1Node.EngineRPCAddress()
+		engineRPC, err := testnet.proxies[index].EngineRPCAddress()
 		if err != nil {
 			testnet.t.Fatalf("eth1 node used for beacon without available RPC: %v", err)
 		}
@@ -257,4 +290,40 @@ func (p *PreparedTestnet) startValidatorClient(testnet *Testnet, validatorDef *h
 	//}
 	vc := &ValidatorClient{testnet.t.StartClient(validatorDef.Name, opts...), p.keyTranches[keyIndex]}
 	testnet.validators = append(testnet.validators, vc)
+}
+
+// loggingRoundTrip writes requests and responses to the test log.
+type loggingRoundTrip struct {
+	t     *hivesim.T
+	hc    *hivesim.Client
+	inner http.RoundTripper
+}
+
+func (rt *loggingRoundTrip) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Read and log the request body.
+	reqBytes, err := ioutil.ReadAll(req.Body)
+	req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	rt.t.Logf(">> (%s) %s, header=%v", rt.hc.Container, bytes.TrimSpace(reqBytes), req.Header)
+	reqCopy := *req
+	reqCopy.Body = ioutil.NopCloser(bytes.NewReader(reqBytes))
+
+	// Do the round trip.
+	resp, err := rt.inner.RoundTrip(&reqCopy)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Read and log the response bytes.
+	respBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	respCopy := *resp
+	respCopy.Body = ioutil.NopCloser(bytes.NewReader(respBytes))
+	rt.t.Logf("<< (%s) %s, header=%v", rt.hc.Container, bytes.TrimSpace(respBytes), resp.Header)
+	return &respCopy, nil
 }
