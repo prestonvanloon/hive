@@ -1249,7 +1249,7 @@ func invalidMissingAncestorReOrgGen(invalid_index int, payloadField InvalidPaylo
 							r.ExpectStatusEither(Accepted, Syncing, Invalid)
 						} else {
 							// This is one of the payloads before the invalid one, therefore is valid.
-							r.ExpectStatus(Valid)
+							r.ExpectStatusEither(Valid, Accepted)
 							p.ExpectPayloadStatus(Valid)
 							p.ExpectLatestValidHash(&altChainPayloads[i].BlockHash)
 						}
