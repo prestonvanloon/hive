@@ -1205,7 +1205,7 @@ func invalidMissingAncestorReOrgGen(invalid_index int, payloadField InvalidPaylo
 						if i < invalid_index {
 							// Payloads before the invalid payload are sent to the secondary client
 							r := secondaryEngineTest.TestEngineNewPayloadV1(altChainPayloads[i])
-							r.ExpectStatus(Valid)
+							r.ExpectStatusEither(Valid, Accepted)
 							s := secondaryEngineTest.TestEngineForkchoiceUpdatedV1(&ForkchoiceStateV1{
 								HeadBlockHash:      altChainPayloads[i].BlockHash,
 								SafeBlockHash:      cA.BlockHash,
